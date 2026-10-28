@@ -21,6 +21,7 @@ const DEFAULTS = Object.freeze({
     textPrefix: 'Currently wearing: ',
     imageNote: 'Outfit reference: wear exactly the outfit shown in this image.',
     sort: 'recent', // 'recent' | 'name'
+    opacity: 100, // panel opacity in percent (30-100)
     folders: [],
     outfits: [],
     worn: { char: {}, user: {} },
@@ -389,9 +390,37 @@ const ICON = {
     camera: '<i class="fa-solid fa-camera"></i>',
     image: '<i class="fa-regular fa-image"></i>',
     check: '<i class="fa-solid fa-check"></i>',
+    drop: '<i class="fa-solid fa-droplet"></i>',
 };
 
 // ---------------------------------------------------------------- UI: panel
+
+function clampOpacity(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(100, Math.max(30, Math.round(n))) : 100;
+}
+
+function applyOpacity() {
+    const value = clampOpacity(getSettings().opacity);
+    if (overlay) {
+        overlay.style.setProperty('--wd-pct', `${value}%`);
+        overlay.style.setProperty('--wd-a', String(value / 100));
+        const slider = overlay.querySelector('#wd_opacity');
+        const out = overlay.querySelector('#wd_opacity_out');
+        if (slider && Number(slider.value) !== value) slider.value = value;
+        if (out) out.textContent = `${value}%`;
+    }
+    const drawer = document.getElementById('wd_set_opacity');
+    if (drawer && Number(drawer.value) !== value) drawer.value = value;
+    const drawerOut = document.getElementById('wd_set_opacity_out');
+    if (drawerOut) drawerOut.textContent = `${value}%`;
+}
+
+function setOpacity(value) {
+    getSettings().opacity = clampOpacity(value);
+    applyOpacity();
+    save();
+}
 
 function buildOverlay() {
     if (overlay) return overlay;
@@ -408,9 +437,15 @@ function buildOverlay() {
                 </div>
                 <div class="wd-head-actions">
                     <button class="wd-btn wd-btn-accent" data-act="new">${ICON.plus}<span>Outfit</span></button>
+                    <button class="wd-icon-btn" data-act="opacity-toggle" aria-label="Panel opacity" aria-expanded="false" aria-controls="wd_opacity_row">${ICON.drop}</button>
                     <button class="wd-icon-btn" data-act="close" aria-label="Close">${ICON.close}</button>
                 </div>
             </header>
+            <div class="wd-opacity" id="wd_opacity_row" hidden>
+                <label for="wd_opacity">Opacity</label>
+                <input type="range" id="wd_opacity" min="30" max="100" step="1" value="100">
+                <output id="wd_opacity_out" for="wd_opacity">100%</output>
+            </div>
             <div class="wd-scroll">
                 <div id="wd_notice"></div>
                 <section class="wd-rail" id="wd_rail" aria-label="Currently wearing"></section>
@@ -446,6 +481,8 @@ function buildOverlay() {
         renderGrid();
     });
     overlay.querySelector('#wd_file').addEventListener('change', onFilePicked);
+    overlay.querySelector('#wd_opacity').addEventListener('input', (e) => setOpacity(e.target.value));
+    applyOpacity();
     return overlay;
 }
 
@@ -924,6 +961,13 @@ async function onOverlayClick(e) {
 
     switch (act) {
         case 'close': closePanel(); break;
+        case 'opacity-toggle': {
+            const row = overlay.querySelector('#wd_opacity_row');
+            row.hidden = !row.hidden;
+            target.setAttribute('aria-expanded', String(!row.hidden));
+            if (!row.hidden) row.querySelector('input').focus({ preventScroll: true });
+            break;
+        }
         case 'new': openSheet(null); break;
         case 'open': openSheet(id); break;
         case 'toggle':
@@ -1200,6 +1244,11 @@ function buildSettingsDrawer() {
                     <input type="text" class="text_pole" id="wd_imgnote" value="${esc(s.imageNote)}">
                 </label>
 
+                <label class="wd-set-field">
+                    <span>Panel opacity: <b id="wd_set_opacity_out">${clampOpacity(s.opacity)}%</b></span>
+                    <input type="range" id="wd_set_opacity" min="30" max="100" step="1" value="${clampOpacity(s.opacity)}">
+                </label>
+
                 <div class="wd-set-title">Chat model macros</div>
                 <p class="wd-set-hint">Put <code>{{outfit_char}}</code> or <code>{{outfit_user}}</code> in a card or preset so the chat model knows what is worn and writes matching image prompts.</p>
 
@@ -1243,6 +1292,7 @@ function buildSettingsDrawer() {
         getSettings().imageNote = e.target.value;
         syncAll();
     });
+    root.querySelector('#wd_set_opacity').addEventListener('input', (e) => setOpacity(e.target.value));
     root.querySelector('#wd_export').addEventListener('click', exportWardrobe);
     const importFile = root.querySelector('#wd_import_file');
     root.querySelector('#wd_import').addEventListener('click', () => importFile.click());

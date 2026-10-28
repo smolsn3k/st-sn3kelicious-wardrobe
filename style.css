@@ -17,9 +17,9 @@
     display: flex;
     align-items: stretch;
     justify-content: center;
-    background: rgba(8, 7, 12, 0.62);
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
+    background: rgba(8, 7, 12, calc(0.62 * var(--wd-a, 1)));
+    -webkit-backdrop-filter: blur(calc(10px * var(--wd-a, 1)));
+    backdrop-filter: blur(calc(10px * var(--wd-a, 1)));
     color: var(--wd-ink);
     font-size: 15px;
     line-height: 1.4;
@@ -45,7 +45,9 @@ html.wd-lock, html.wd-lock body { overflow: hidden; }
     width: 100%;
     height: 100%;
     height: 100dvh;
-    background: var(--wd-bg);
+    background: color-mix(in srgb, var(--wd-bg) var(--wd-pct, 100%), transparent);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
     outline: none;
     padding-top: env(safe-area-inset-top, 0px);
     padding-left: env(safe-area-inset-left, 0px);
@@ -132,6 +134,16 @@ html.wd-lock, html.wd-lock body { overflow: hidden; }
 .wd-icon-btn:hover { background: var(--wd-raise-2); }
 
 .wd-overlay :focus-visible { outline: 2px solid var(--wd-accent); outline-offset: 2px; }
+
+/* ---------- opacity row ---------- */
+
+.wd-opacity {
+    flex: none; display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; border-bottom: 1px solid var(--wd-line);
+    font-size: 0.85rem; color: var(--wd-muted);
+}
+.wd-opacity input[type="range"] { flex: 1; min-width: 0; height: 32px; margin: 0; accent-color: var(--wd-accent); cursor: pointer; }
+.wd-opacity output { min-width: 3.2em; text-align: right; color: var(--wd-ink); font-variant-numeric: tabular-nums; }
 
 /* ---------- rail: currently wearing ---------- */
 
@@ -459,6 +471,7 @@ html.wd-lock, html.wd-lock body { overflow: hidden; }
 .wd-set-hint code { padding: 1px 5px; border-radius: 5px; background: rgba(128, 128, 128, 0.2); }
 .wd-set-field { display: flex; flex-direction: column; gap: 4px; }
 .wd-set-field > span { font-size: 0.85em; opacity: 0.8; }
+.wd-set-field input[type="range"] { width: 100%; margin: 4px 0; accent-color: var(--SmartThemeQuoteColor, #c9a7ff); }
 .wd-set-row { display: flex; gap: 8px; }
 .wd-set-row .wd-btn { flex: 1; }
 .wd-settings .wd-btn { min-height: 42px; border: 1px solid rgba(128, 128, 128, 0.35); background: rgba(128, 128, 128, 0.14); color: inherit; border-radius: 10px; padding: 0 14px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
