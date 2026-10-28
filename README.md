@@ -33,5 +33,9 @@ Pictures are only used if the provider/model supports reference images.
 `{{outfit_char}}` and `{{outfit_user}}` insert the worn outfit prompt into a card or preset,
 so the chat model writes matching image prompts.
 
+## Receiving outfits from other extensions
+The extension exposes `globalThis.sn3kWardrobe.addOutfit({ name, prompt, tags, image })`.
+Outfit Tagger uses it for its **To wardrobe** button; `image` may be a data URL (it gets uploaded) or an existing path.
+
 ## Backup
 Export/Import (settings drawer) saves outfits, folders and tags, with pictures embedded, as JSON.

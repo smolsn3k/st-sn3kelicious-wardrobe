@@ -1344,6 +1344,28 @@ async function onContextChanged() {
     if (ui.open) renderPanel();
 }
 
+// Public API so other extensions (e.g. Outfit Tagger) can add an outfit.
+// addOutfit({ name, prompt, tags, image }) - image is optional: a data: URL or an already uploaded path.
+globalThis.sn3kWardrobe = {
+    version: 1,
+    async addOutfit({ name = '', prompt = '', tags = [], image = '' } = {}) {
+        const s = getSettings();
+        const title = String(name).trim() || 'Untitled outfit';
+        let path = String(image || '');
+        if (path.startsWith('data:')) path = await uploadOutfitImage(path, title);
+        const o = {
+            id: uid('o'), name: title, tags: normalizeTags(tags), image: path,
+            prompt: String(prompt).trim(), folderId: '',
+            createdAt: Date.now(), updatedAt: Date.now(),
+        };
+        s.outfits.push(o);
+        save();
+        syncAll();
+        if (ui.open) renderPanel();
+        return o.id;
+    },
+};
+
 (function init() {
     getSettings();
     const c = ctx();
