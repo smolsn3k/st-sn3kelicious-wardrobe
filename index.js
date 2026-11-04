@@ -950,6 +950,15 @@ function onOverlayKey(e) {
 }
 
 async function onOverlayClick(e) {
+    try {
+        await onOverlayClickInner(e);
+    } catch (error) {
+        console.error('[Wardrobe]', error);
+        toast('error', `Wardrobe error: ${error?.message || error}`);
+    }
+}
+
+async function onOverlayClickInner(e) {
     const target = e.target.closest('[data-act]');
     if (!target || !overlay.contains(target)) {
         if (e.target === overlay) closePanel();
