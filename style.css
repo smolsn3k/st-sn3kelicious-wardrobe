@@ -457,7 +457,7 @@ html.wd-lock, html.wd-lock body { overflow: hidden; }
 
 /* ---------- extension settings drawer ---------- */
 
-.wd-settings .inline-drawer-content { display: flex; flex-direction: column; gap: 10px; }
+.wd-settings .wd-set-inner { display: flex; flex-direction: column; gap: 10px; }
 .wd-set-status {
     display: flex; align-items: center; gap: 8px;
     padding: 8px 12px; border-radius: 10px; font-size: 0.9rem;

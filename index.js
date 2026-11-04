@@ -1221,6 +1221,7 @@ function buildSettingsDrawer() {
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
+              <div class="wd-set-inner">
                 <div class="wd-set-status" id="wd_status"></div>
                 <button class="wd-btn wd-btn-accent wd-set-open" id="wd_open_btn">${ICON.shirt}<span>Open wardrobe</span></button>
 
@@ -1257,6 +1258,7 @@ function buildSettingsDrawer() {
                     <button class="wd-btn wd-btn-soft" id="wd_import">Import</button>
                     <input type="file" id="wd_import_file" accept="application/json,.json" hidden>
                 </div>
+              </div>
             </div>
         </div>`);
 
@@ -1343,28 +1345,6 @@ async function onContextChanged() {
     syncKey('user', keys.user);
     if (ui.open) renderPanel();
 }
-
-// Public API so other extensions (e.g. Outfit Tagger) can add an outfit.
-// addOutfit({ name, prompt, tags, image }) - image is optional: a data: URL or an already uploaded path.
-globalThis.sn3kWardrobe = {
-    version: 1,
-    async addOutfit({ name = '', prompt = '', tags = [], image = '' } = {}) {
-        const s = getSettings();
-        const title = String(name).trim() || 'Untitled outfit';
-        let path = String(image || '');
-        if (path.startsWith('data:')) path = await uploadOutfitImage(path, title);
-        const o = {
-            id: uid('o'), name: title, tags: normalizeTags(tags), image: path,
-            prompt: String(prompt).trim(), folderId: '',
-            createdAt: Date.now(), updatedAt: Date.now(),
-        };
-        s.outfits.push(o);
-        save();
-        syncAll();
-        if (ui.open) renderPanel();
-        return o.id;
-    },
-};
 
 (function init() {
     getSettings();
