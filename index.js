@@ -56,9 +56,29 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;',
 }[ch]));
 
+const SELF_BASE = new URL('./', import.meta.url).href;
+const diagErrors = [];
+globalThis.__sillywardrobeLoads = (globalThis.__sillywardrobeLoads || 0) + 1;
+
+function recordError(source, message) {
+    diagErrors.push(`${new Date().toTimeString().slice(0, 8)} ${source}: ${message}`);
+    if (diagErrors.length > 30) diagErrors.shift();
+}
+
+window.addEventListener('error', (e) => {
+    if (String(e.filename || '').startsWith(SELF_BASE)) {
+        recordError('window.error', `${e.message} (${String(e.filename).replace(SELF_BASE, '')}:${e.lineno}:${e.colno})`);
+    }
+});
+window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    if (String(r?.stack || '').includes(SELF_BASE)) recordError('unhandled promise', r?.message || String(r));
+});
+
 const uid = (p) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 function toast(kind, message) {
+    if (kind === 'error') recordError('toast', message);
     try {
         if (typeof toastr !== 'undefined' && toastr[kind]) toastr[kind](message, 'Wardrobe');
         else console.log(`[Wardrobe] ${message}`);
@@ -954,6 +974,7 @@ async function onOverlayClick(e) {
         await onOverlayClickInner(e);
     } catch (error) {
         console.error('[Wardrobe]', error);
+        recordError('click handler', error?.stack || String(error));
         toast('error', `Wardrobe error: ${error?.message || error}`);
     }
 }
@@ -1212,6 +1233,218 @@ async function importWardrobe(file) {
     if (ui.open) renderPanel();
 }
 
+// ---------------------------------------------------------------- diagnostics
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function alphaOf(color) {
+    const c = String(color || '');
+    const slash = c.match(/\/\s*([\d.]+%?)\s*\)/);
+    if (slash) return slash[1].endsWith('%') ? parseFloat(slash[1]) / 100 : parseFloat(slash[1]);
+    const rgba = c.match(/rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)/);
+    if (rgba) return parseFloat(rgba[1]);
+    return 1;
+}
+
+function describeEl(el) {
+    if (!el) return 'nothing';
+    const id = el.id ? `#${el.id}` : '';
+    const cls = typeof el.className === 'string' && el.className ? `.${el.className.trim().split(/\s+/).join('.')}` : '';
+    return `<${el.tagName.toLowerCase()}${id}${cls}>`;
+}
+
+async function runDiagnostics() {
+    const out = [];
+    const ok = (l, d = '') => out.push(`[OK]   ${l}${d ? ` — ${d}` : ''}`);
+    const bad = (l, d = '') => out.push(`[FAIL] ${l}${d ? ` — ${d}` : ''}`);
+    const warn = (l, d = '') => out.push(`[WARN] ${l}${d ? ` — ${d}` : ''}`);
+    const info = (l, d = '') => out.push(`[i]    ${l}${d ? ` — ${d}` : ''}`);
+    const section = (t) => out.push('', `== ${t} ==`);
+
+    out.push('Wardrobe diagnostics', new Date().toString());
+
+    section('Environment');
+    try {
+        info('Browser', navigator.userAgent);
+        info('Viewport', `${innerWidth}x${innerHeight} @${devicePixelRatio}x` + (window.visualViewport ? ` (visual ${Math.round(visualViewport.width)}x${Math.round(visualViewport.height)})` : ''));
+        const c = ctx();
+        info('SillyTavern', String(c.version || SillyTavern.version || 'version not exposed'));
+        info('Extension folder', SELF_BASE);
+        const tests = {
+            'color-mix': ['color', 'color-mix(in srgb, red 50%, blue)'],
+            'relative color': ['color', 'rgb(from red r g b / 1)'],
+            '100dvh': ['height', '100dvh'],
+            'clip-path': ['clip-path', 'polygon(0 0, 100% 0, 100% 100%)'],
+            'backdrop-filter': ['backdrop-filter', 'blur(1px)'],
+        };
+        for (const [name, [prop, val]] of Object.entries(tests)) {
+            (CSS.supports(prop, val) ? ok : warn)(`CSS ${name}`, CSS.supports(prop, val) ? 'supported' : 'not supported');
+        }
+        const probe = document.createElement('i');
+        probe.className = 'fa-solid fa-shirt';
+        document.body.appendChild(probe);
+        const ff = getComputedStyle(probe).fontFamily;
+        probe.remove();
+        (/awesome/i.test(ff) ? ok : warn)('Icon font', ff);
+        const root = getComputedStyle(document.documentElement);
+        for (const v of ['--SmartThemeBlurTintColor', '--SmartThemeBodyColor', '--SmartThemeQuoteColor']) {
+            const val = root.getPropertyValue(v).trim() || '(not set)';
+            info(v, `${val}${v === '--SmartThemeBlurTintColor' && alphaOf(val) < 1 ? '  <- translucent theme color' : ''}`);
+        }
+    } catch (e) { bad('Environment check crashed', e.message); }
+
+    section('Loading / conflicts');
+    try {
+        const loads = globalThis.__sillywardrobeLoads || 0;
+        (loads > 1 ? bad : ok)('Script loaded', `${loads} time(s)${loads > 1 ? ' — two copies of Wardrobe are running' : ''}`);
+        for (const id of ['wd_overlay', 'wd_settings_root', 'wd_wand_item']) {
+            const n = document.querySelectorAll(`[id="${id}"]`).length;
+            (n > 1 ? bad : ok)(`Element #${id}`, `${n} found`);
+        }
+        const tags = [...document.querySelectorAll('script[src], link[rel="stylesheet"][href]')]
+            .map((n) => n.src || n.href)
+            .filter((u) => /wardrobe/i.test(u));
+        info('Wardrobe-like files loaded', tags.length ? tags.map((u) => u.replace(location.origin, '')).join(' | ') : 'none found');
+        if (new Set(tags.map((u) => u.split('/').slice(0, -1).join('/'))).size > 1) {
+            warn('Several Wardrobe-style extensions are installed', 'they can share ids and CSS; keep only one enabled');
+        }
+        info('globalThis.sn3kWardrobe', globalThis.sn3kWardrobe ? 'present' : 'absent');
+    } catch (e) { bad('Conflict check crashed', e.message); }
+
+    section('Data');
+    try {
+        const s = getSettings();
+        await refreshKeys();
+        info('Outfits / folders', `${s.outfits.length} / ${s.folders.length}`);
+        info('Send mode', `${s.sendMode}, fallback ${s.fallback}, opacity ${s.opacity}%`);
+        (iigPresent() ? ok : warn)('sillyimages settings', iigPresent() ? 'found' : 'not found');
+        info('Character key', String(keys.char));
+        info('Persona key', String(keys.user));
+        info('Worn (this char / persona)', `${wornId('char') || '-'} / ${wornId('user') || '-'}`);
+        const odd = s.outfits.filter((o) => !o || !o.id || typeof o.name !== 'string' || !Array.isArray(o.tags));
+        (odd.length ? bad : ok)('Outfit records valid', odd.length ? `${odd.length} malformed (missing id / name / tags array)` : 'all fine');
+        const dup = s.outfits.length - new Set(s.outfits.map((o) => o?.id)).size;
+        (dup ? bad : ok)('Outfit ids unique', dup ? `${dup} duplicate id(s)` : 'yes');
+    } catch (e) { bad('Data check crashed', e.message); }
+
+    section('Panel self-test (opens the panel briefly)');
+    const wasOpen = ui.open;
+    let testId = null;
+    try {
+        await openPanel();
+        await sleep(80);
+        const cs = getComputedStyle(overlay);
+        info('Overlay', `display ${cs.display}, position ${cs.position}, z-index ${cs.zIndex}`);
+        const panel = overlay.querySelector('.wd-panel');
+        const pr = panel.getBoundingClientRect();
+        (pr.width > 50 && pr.height > 50 ? ok : bad)('Panel size', `${Math.round(pr.width)}x${Math.round(pr.height)}`);
+        const pa = alphaOf(getComputedStyle(panel).backgroundColor);
+        info('Panel background alpha', `${pa} (setting ${getSettings().opacity}%)`);
+
+        const btn = overlay.querySelector('.wd-head [data-act="new"]');
+        const br = btn.getBoundingClientRect();
+        const hit = document.elementFromPoint(br.x + br.width / 2, br.y + br.height / 2);
+        (hit && btn.contains(hit) ? ok : bad)('+Outfit button reachable', hit && btn.contains(hit) ? 'tap lands on it' : `covered by ${describeEl(hit)}`);
+
+        btn.click();
+        await sleep(400);
+        (ui.sheet ? ok : bad)('+Outfit opens editor state', ui.sheet ? 'yes' : 'ui.sheet is empty after click');
+        const sheet = overlay.querySelector('.wd-sheet');
+        if (!sheet) {
+            bad('Editor sheet element', 'not rendered');
+        } else {
+            const sc = getComputedStyle(sheet);
+            const sr = sheet.getBoundingClientRect();
+            (sr.width > 50 && sr.height > 50 ? ok : bad)('Sheet size', `${Math.round(sr.width)}x${Math.round(sr.height)} at (${Math.round(sr.x)},${Math.round(sr.y)})`);
+            (sc.opacity === '1' ? ok : bad)('Sheet opacity', sc.opacity);
+            (sc.visibility === 'visible' ? ok : bad)('Sheet visibility', sc.visibility);
+            const sa = alphaOf(sc.backgroundColor);
+            (sa >= 0.99 ? ok : bad)('Sheet background', `alpha ${sa}`);
+            const inside = (x, y) => { const e = document.elementFromPoint(x, y); return e && sheet.contains(e) ? null : describeEl(e); };
+            const bx = sr.x + sr.width / 2;
+            const cover = inside(bx, sr.y + Math.min(60, sr.height / 2));
+            (cover ? bad : ok)('Sheet on top', cover ? `covered by ${cover}` : 'nothing above it');
+            const nameEl = overlay.querySelector('#wd_name');
+            const nr = nameEl.getBoundingClientRect();
+            const nameCover = inside(nr.x + nr.width / 2, nr.y + nr.height / 2);
+            (nr.height > 0 && !nameCover ? ok : bad)('Name field reachable', nameCover ? `covered by ${nameCover}` : `${Math.round(nr.width)}x${Math.round(nr.height)}`);
+            const saveBtn = overlay.querySelector('[data-act="sheet-save"]');
+            const svr = saveBtn.getBoundingClientRect();
+            const inView = svr.bottom <= innerHeight + 1 && svr.top >= 0;
+            (inView ? ok : bad)('Save button on screen', `y ${Math.round(svr.top)}-${Math.round(svr.bottom)} of ${innerHeight}`);
+        }
+
+        ui.sheet.draft.name = '__wardrobe_diag__';
+        ui.sheet.draft.prompt = 'diagnostic test';
+        const created = await commitSheet();
+        testId = created?.id || null;
+        (testId && getOutfit(testId) ? ok : bad)('Create outfit (save)', testId ? 'saved' : 'nothing was saved');
+        closeSheet(true);
+        if (testId) {
+            openSheet(testId);
+            await sleep(100);
+            (ui.sheet?.id === testId && ui.sheet.draft.name === '__wardrobe_diag__' ? ok : bad)('Open existing outfit', ui.sheet ? `draft "${ui.sheet.draft.name}"` : 'editor did not open');
+            if (ui.sheet) {
+                ui.sheet.draft.name = '__wardrobe_diag_edited__';
+                await commitSheet();
+                (getOutfit(testId)?.name === '__wardrobe_diag_edited__' ? ok : bad)('Edit outfit (save)', getOutfit(testId)?.name || 'missing');
+            }
+        }
+    } catch (e) {
+        bad('Panel self-test crashed', e?.stack || String(e));
+    } finally {
+        try {
+            const s = getSettings();
+            s.outfits = s.outfits.filter((o) => !String(o?.name || '').startsWith('__wardrobe_diag'));
+            unwearEverywhere(testId);
+            syncAll();
+            closeSheet(true);
+            if (!wasOpen) closePanel(); else renderPanel();
+        } catch (e) { bad('Cleanup failed', e.message); }
+    }
+
+    section('Recent errors');
+    if (diagErrors.length) diagErrors.forEach((line) => out.push(line)); else out.push('none recorded');
+
+    const fails = out.filter((l) => l.startsWith('[FAIL]')).length;
+    out.splice(2, 0, fails ? `RESULT: ${fails} check(s) failed` : 'RESULT: all checks passed');
+    return out.join('\n');
+}
+
+function showDiagnosticsReport(text) {
+    document.getElementById('wd_diag')?.remove();
+    const el = document.createElement('div');
+    el.id = 'wd_diag';
+    el.className = 'wd-diag';
+    el.innerHTML = `
+        <div class="wd-diag-card" role="dialog" aria-label="Wardrobe diagnostics">
+            <div class="wd-diag-head"><b>Wardrobe diagnostics</b></div>
+            <textarea readonly spellcheck="false"></textarea>
+            <div class="wd-diag-actions">
+                <button data-diag="copy">Copy report</button>
+                <button data-diag="close">Close</button>
+            </div>
+        </div>`;
+    const area = el.querySelector('textarea');
+    area.value = text;
+    el.addEventListener('click', async (e) => {
+        const act = e.target.closest('[data-diag]')?.dataset.diag;
+        if (act === 'close' || e.target === el) {
+            el.remove();
+        } else if (act === 'copy') {
+            try {
+                await navigator.clipboard.writeText(area.value);
+                toast('success', 'Report copied.');
+            } catch (_e) {
+                area.focus();
+                area.select();
+                try { document.execCommand('copy'); toast('success', 'Report copied.'); } catch (_e2) { toast('info', 'Press and hold the text to copy it.'); }
+            }
+        }
+    });
+    document.body.appendChild(el);
+}
+
 // ---------------------------------------------------------------- settings drawer
 
 function buildSettingsDrawer() {
@@ -1262,6 +1495,10 @@ function buildSettingsDrawer() {
                 <div class="wd-set-title">Chat model macros</div>
                 <p class="wd-set-hint">Put <code>{{outfit_char}}</code> or <code>{{outfit_user}}</code> in a card or preset so the chat model knows what is worn and writes matching image prompts.</p>
 
+                <div class="wd-set-title">Diagnostics</div>
+                <p class="wd-set-hint">If something does not work, run this and send me the report.</p>
+                <button class="wd-btn wd-btn-soft wd-set-open" id="wd_diag_btn">Run diagnostics</button>
+
                 <div class="wd-set-row">
                     <button class="wd-btn wd-btn-soft" id="wd_export">Export</button>
                     <button class="wd-btn wd-btn-soft" id="wd_import">Import</button>
@@ -1304,6 +1541,20 @@ function buildSettingsDrawer() {
         syncAll();
     });
     root.querySelector('#wd_set_opacity').addEventListener('input', (e) => setOpacity(e.target.value));
+    root.querySelector('#wd_diag_btn').addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        const label = btn.textContent;
+        btn.textContent = 'Running…';
+        try {
+            showDiagnosticsReport(await runDiagnostics());
+        } catch (error) {
+            showDiagnosticsReport(`Diagnostics crashed:\n${error?.stack || error}\n\nRecent errors:\n${diagErrors.join('\n')}`);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = label;
+        }
+    });
     root.querySelector('#wd_export').addEventListener('click', exportWardrobe);
     const importFile = root.querySelector('#wd_import_file');
     root.querySelector('#wd_import').addEventListener('click', () => importFile.click());

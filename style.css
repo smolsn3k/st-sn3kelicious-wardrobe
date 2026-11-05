@@ -3,7 +3,7 @@
 .wd-overlay {
     --wd-ink: var(--SmartThemeBodyColor, #e8e6ee);
     --wd-accent: var(--SmartThemeQuoteColor, #c9a7ff);
-    --wd-bg: color-mix(in srgb, var(--SmartThemeBlurTintColor, #17161d) 96%, #000);
+    --wd-bg: #17161d; /* always opaque; theme tint is applied below when the browser can strip its alpha */
     --wd-raise: color-mix(in srgb, var(--wd-ink) 7%, transparent);
     --wd-raise-2: color-mix(in srgb, var(--wd-ink) 12%, transparent);
     --wd-line: color-mix(in srgb, var(--wd-ink) 16%, transparent);
@@ -23,6 +23,10 @@
     color: var(--wd-ink);
     font-size: 15px;
     line-height: 1.4;
+}
+
+@supports (color: rgb(from red r g b)) {
+    .wd-overlay { --wd-bg: color-mix(in srgb, rgb(from var(--SmartThemeBlurTintColor, #17161d) r g b / 1) 94%, #000); }
 }
 
 .wd-overlay[hidden],
@@ -496,3 +500,28 @@ html.wd-lock, html.wd-lock body { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
     .wd-overlay *, .wd-overlay *::before, .wd-overlay *::after { transition: none !important; }
 }
+
+/* ---------- diagnostics report ---------- */
+
+.wd-diag {
+    position: fixed; inset: 0; z-index: 2147483000;
+    display: grid; place-items: center; padding: 14px;
+    background: rgba(0, 0, 0, 0.7);
+}
+.wd-diag-card {
+    width: 100%; max-width: 680px; max-height: 92dvh;
+    display: flex; flex-direction: column; gap: 10px; padding: 14px;
+    background: #17161d; color: #e8e6ee;
+    border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 16px;
+}
+.wd-diag-card textarea {
+    flex: 1; min-height: 50dvh; width: 100%; resize: none; padding: 10px;
+    background: #0e0d12; color: #d9d7e0; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 10px;
+    font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre; overflow: auto;
+}
+.wd-diag-actions { display: flex; gap: 8px; }
+.wd-diag-actions button {
+    flex: 1; min-height: 44px; border-radius: 10px; font-weight: 600; cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.2); background: rgba(255, 255, 255, 0.08); color: inherit;
+}
+.wd-diag-actions button[data-diag="copy"] { background: var(--SmartThemeQuoteColor, #c9a7ff); color: #14121a; border-color: transparent; }

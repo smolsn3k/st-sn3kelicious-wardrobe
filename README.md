@@ -24,6 +24,9 @@ Requires the sillyimages extension to be installed and enabled.
 ## Opacity
 The droplet button in the panel header (or **Extensions → Wardrobe → Panel opacity**) sets how see-through the panel is, 30–100%, so you can keep an eye on the chat behind it.
 
+## Diagnostics
+Extensions → Wardrobe → **Run diagnostics** briefly opens the panel, tests +Outfit, saving and editing, checks for duplicate installs, and shows a report you can copy.
+
 ## How it connects
 The worn outfit is written into sillyimages' *Character library* as managed items (ids start with `wardrobe-`),
 so it is sent with every generation. No sillyimages files are modified.
