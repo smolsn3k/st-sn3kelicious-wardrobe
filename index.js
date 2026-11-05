@@ -420,6 +420,24 @@ function clampOpacity(v) {
     return Number.isFinite(n) ? Math.min(100, Math.max(30, Math.round(n))) : 100;
 }
 
+function syncViewport() {
+    if (!overlay) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    overlay.style.setProperty('--wd-vv-top', `${Math.max(0, Math.round(vv.offsetTop))}px`);
+    overlay.style.setProperty('--wd-vv-h', `${Math.round(vv.height)}px`);
+}
+
+let viewportBound = false;
+function bindViewport() {
+    const vv = window.visualViewport;
+    if (viewportBound || !vv) return;
+    viewportBound = true;
+    vv.addEventListener('resize', syncViewport);
+    vv.addEventListener('scroll', syncViewport);
+    window.addEventListener('orientationchange', () => setTimeout(syncViewport, 250));
+}
+
 function applyOpacity() {
     const value = clampOpacity(getSettings().opacity);
     if (overlay) {
@@ -511,6 +529,8 @@ async function openPanel() {
     await refreshKeys();
     ui.lastFocus = document.activeElement;
     overlay.hidden = false;
+    bindViewport();
+    syncViewport();
     document.documentElement.classList.add('wd-lock');
     ui.open = true;
     overlay.querySelector('#wd_sort').value = getSettings().sort;
@@ -702,7 +722,10 @@ function openSheet(id) {
     const layer = overlay.querySelector('#wd_sheet_layer');
     layer.hidden = false;
     requestAnimationFrame(() => layer.classList.add('is-in'));
-    if (!id) overlay.querySelector('#wd_name')?.focus({ preventScroll: true });
+    // Only auto-focus with a real pointer: on phones this would pop up the keyboard and shrink the page.
+    if (!id && window.matchMedia?.('(pointer: fine)').matches) {
+        overlay.querySelector('#wd_name')?.focus({ preventScroll: true });
+    }
 }
 
 function closeSheet(immediate = false) {
@@ -1347,7 +1370,13 @@ async function runDiagnostics() {
         (hit && btn.contains(hit) ? ok : bad)('+Outfit button reachable', hit && btn.contains(hit) ? 'tap lands on it' : `covered by ${describeEl(hit)}`);
 
         btn.click();
-        await sleep(400);
+        await sleep(700);
+        const vv = window.visualViewport;
+        info('Viewport now', `inner ${innerWidth}x${innerHeight}, client ${document.documentElement.clientWidth}x${document.documentElement.clientHeight}` + (vv ? `, visual ${Math.round(vv.width)}x${Math.round(vv.height)} offsetTop ${Math.round(vv.offsetTop)}` : '') + `, scrollY ${Math.round(scrollY)}`);
+        const orc = overlay.getBoundingClientRect();
+        info('Overlay rect', `y ${Math.round(orc.top)} to ${Math.round(orc.bottom)}`);
+        const lrc = overlay.querySelector('#wd_sheet_layer')?.getBoundingClientRect();
+        if (lrc) info('Sheet layer rect', `y ${Math.round(lrc.top)} to ${Math.round(lrc.bottom)}`);
         (ui.sheet ? ok : bad)('+Outfit opens editor state', ui.sheet ? 'yes' : 'ui.sheet is empty after click');
         const sheet = overlay.querySelector('.wd-sheet');
         if (!sheet) {
