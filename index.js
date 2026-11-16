@@ -11,6 +11,7 @@
 
 const MODULE_NAME = 'wardrobe';
 const IIG_MODULE = 'inline_image_gen';
+const CHAT_KEY = 'wardrobe'; // chat_metadata key: what is worn in THIS chat
 const MANAGED_PREFIX = 'wardrobe-';
 const PERSONAS_PATHS = ['/scripts/personas.js', '../../../personas.js'];
 
@@ -24,7 +25,6 @@ const DEFAULTS = Object.freeze({
     opacity: 100, // panel opacity in percent (30-100)
     folders: [],
     outfits: [],
-    worn: { char: {}, user: {} },
 });
 
 const ctx = () => SillyTavern.getContext();
@@ -40,9 +40,6 @@ function getSettings() {
     for (const key of Object.keys(DEFAULTS)) {
         if (!Object.hasOwn(s, key)) s[key] = structuredClone(DEFAULTS[key]);
     }
-    if (!s.worn || typeof s.worn !== 'object') s.worn = { char: {}, user: {} };
-    s.worn.char = s.worn.char && typeof s.worn.char === 'object' ? s.worn.char : {};
-    s.worn.user = s.worn.user && typeof s.worn.user === 'object' ? s.worn.user : {};
     return s;
 }
 
@@ -202,12 +199,44 @@ function outfitParts(outfit) {
     return { prompt, image };
 }
 
+// ---- per-chat worn state (lives in chat_metadata, so every chat has its own outfits)
+
+function chatOpen() {
+    try { return !!ctx().chatId; } catch (_e) { return false; }
+}
+
+function chatState(create = false) {
+    const md = ctx().chatMetadata;
+    if (!md || typeof md !== 'object' || !chatOpen()) return null;
+    let st = md[CHAT_KEY];
+    if (!st || typeof st !== 'object') {
+        if (!create) return null;
+        st = md[CHAT_KEY] = { char: null, user: null };
+    }
+    if (!Object.hasOwn(st, 'char')) st.char = null;
+    if (!Object.hasOwn(st, 'user')) st.user = null;
+    return st;
+}
+
+function saveChat() {
+    const c = ctx();
+    try {
+        if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced();
+        else if (typeof c.saveMetadata === 'function') c.saveMetadata();
+    } catch (e) { recordError('saveMetadata', e?.message || String(e)); }
+}
+
+function stripManaged(entry) {
+    if (!entry || !Array.isArray(entry.appearanceItems)) return;
+    entry.appearanceItems = entry.appearanceItems.filter((item) => !String(item?.id || '').startsWith(MANAGED_PREFIX));
+}
+
 function syncKey(kind, key) {
     if (!key) return;
     const bucket = iigBucket(kind);
     if (!bucket) return;
     const s = getSettings();
-    const outfit = getOutfit(s.worn[kind][key]);
+    const outfit = getOutfit(chatState()?.[kind]);
     let entry = bucket[key];
     if (!entry && !outfit) return;
     if (!entry) {
@@ -218,8 +247,8 @@ function syncKey(kind, key) {
             generations: [],
         };
     }
-    const items = Array.isArray(entry.appearanceItems) ? entry.appearanceItems : [];
-    entry.appearanceItems = items.filter((item) => !String(item?.id || '').startsWith(MANAGED_PREFIX));
+    stripManaged(entry);
+    if (!Array.isArray(entry.appearanceItems)) entry.appearanceItems = [];
     if (!outfit) return;
     const parts = outfitParts(outfit);
     if (parts.prompt) {
@@ -242,67 +271,66 @@ function syncKey(kind, key) {
     }
 }
 
+// The sillyimages library is global (per character / persona), so on every chat switch the managed
+// wardrobe items are cleared everywhere and only the open chat's outfits are written back in.
 function syncAll() {
-    const s = getSettings();
     for (const kind of ['char', 'user']) {
-        for (const key of Object.keys(s.worn[kind])) syncKey(kind, key);
+        const bucket = iigBucket(kind);
+        if (!bucket) continue;
+        for (const entry of Object.values(bucket)) stripManaged(entry);
     }
+    for (const kind of ['char', 'user']) syncKey(kind, keys[kind]);
     save();
 }
 
 // ---------------------------------------------------------------- wearing
 
 function wornId(kind) {
-    const key = keys[kind];
-    return key ? (getSettings().worn[kind][key] || null) : null;
+    const id = chatState()?.[kind] || null;
+    return id && getOutfit(id) ? id : null;
 }
 
 function wear(kind, outfitId) {
     const key = keys[kind];
-    if (!key) return false;
-    getSettings().worn[kind][key] = outfitId;
+    if (!key || !chatOpen()) return false;
+    const st = chatState(true);
+    if (!st) return false;
+    st[kind] = outfitId;
+    saveChat();
     syncKey(kind, key);
     save();
     return true;
 }
 
 function unwear(kind) {
-    const key = keys[kind];
-    if (!key) return;
-    const s = getSettings();
-    delete s.worn[kind][key];
-    // Entry may no longer be in worn map, so clean it explicitly.
-    const bucket = iigBucket(kind);
-    const entry = bucket?.[key];
-    if (entry) {
-        entry.appearanceItems = (entry.appearanceItems || [])
-            .filter((item) => !String(item?.id || '').startsWith(MANAGED_PREFIX));
+    const st = chatState();
+    if (st) {
+        st[kind] = null;
+        saveChat();
     }
+    syncKey(kind, keys[kind]);
     save();
 }
 
 function toggleWear(kind, outfitId) {
-    if (!keys[kind]) {
-        toast('warning', kind === 'char' ? 'Open a character chat first.' : 'No active persona found.');
+    if (!keys[kind] || !chatOpen()) {
+        toast('warning', 'Open a chat first.');
         return;
     }
     if (wornId(kind) === outfitId) unwear(kind);
     else wear(kind, outfitId);
 }
 
+// Only the open chat can be touched here; other chats drop a deleted outfit on their own
+// (wornId ignores ids that no longer exist).
 function unwearEverywhere(outfitId) {
-    const s = getSettings();
+    const st = chatState();
+    if (!st) return;
+    let changed = false;
     for (const kind of ['char', 'user']) {
-        for (const [key, id] of Object.entries(s.worn[kind])) {
-            if (id !== outfitId) continue;
-            delete s.worn[kind][key];
-            const entry = iigBucket(kind)?.[key];
-            if (entry) {
-                entry.appearanceItems = (entry.appearanceItems || [])
-                    .filter((item) => !String(item?.id || '').startsWith(MANAGED_PREFIX));
-            }
-        }
+        if (st[kind] === outfitId) { st[kind] = null; changed = true; }
     }
+    if (changed) saveChat();
 }
 
 // ---------------------------------------------------------------- images
@@ -1630,8 +1658,7 @@ function registerMacros() {
 
 async function onContextChanged() {
     await refreshKeys();
-    syncKey('char', keys.char);
-    syncKey('user', keys.user);
+    syncAll();
     if (ui.open) renderPanel();
 }
 

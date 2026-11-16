@@ -12,7 +12,7 @@ Requires the sillyimages extension to be installed and enabled.
 - Open the wardrobe from the **wand menu → Wardrobe** or **Extensions → Wardrobe → Open wardrobe**.
 - **+ Outfit**: add a picture (camera or gallery), a name, a prompt, a folder and tags.
 - Wear it: tap the robot button (character), the person button (you), or **Both** in the outfit sheet.
-  Each character and each persona remembers its own outfit.
+  **Worn outfits are saved per chat**: every chat remembers what the character and your persona wear in it, so two chats with the same character can have different outfits. The outfit library itself (pictures, folders, tags) is shared by all chats.
 - Folders: **+ Folder**, then **Edit** to rename or delete. Tags: tap to filter; search covers names, prompts and tags.
 
 ## What gets sent (Extensions → Wardrobe)
