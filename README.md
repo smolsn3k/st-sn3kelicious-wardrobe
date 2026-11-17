@@ -38,3 +38,9 @@ so the chat model writes matching image prompts.
 
 ## Backup
 Export/Import (settings drawer) saves outfits, folders and tags, with pictures embedded, as JSON.
+
+## Chat-model injection (works with any provider)
+Because the image prompt is written by your chat model, Wardrobe also tells it what each side is wearing in the current chat (Extensions → Wardrobe → *Tell the chat model what is worn*, on by default). That puts the outfit into the picture prompt even for text-only providers such as direct NovelAI, which ignore reference pictures. The outfit's **prompt text** is what gets used, so write it in the style your image model likes (tags for NovelAI).
+
+### Direct NovelAI note
+sillyimages sends library descriptions to NovelAI as extra `| ...` character prompts and never sends pictures, so on direct NovelAI Wardrobe relies on the chat-model injection above and skips the library text (turn on *Direct NovelAI: also send the outfit as an extra character prompt* to restore it). Also check sillyimages → NovelAI → *Send character descriptions* is not "Do not send" if you use the library route.

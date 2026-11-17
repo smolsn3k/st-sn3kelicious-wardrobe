@@ -11,6 +11,7 @@
 
 const MODULE_NAME = 'wardrobe';
 const IIG_MODULE = 'inline_image_gen';
+const EXT_PROMPT_KEY = 'wardrobe_outfits';
 const CHAT_KEY = 'wardrobe'; // chat_metadata key: what is worn in THIS chat
 const MANAGED_PREFIX = 'wardrobe-';
 const PERSONAS_PATHS = ['/scripts/personas.js', '../../../personas.js'];
@@ -23,6 +24,8 @@ const DEFAULTS = Object.freeze({
     imageNote: 'Outfit reference: wear exactly the outfit shown in this image.',
     sort: 'recent', // 'recent' | 'name'
     opacity: 100, // panel opacity in percent (30-100)
+    novelaiLibraryText: false, // direct NovelAI: also add outfit as an extra `|` character prompt (off: chat model writes it)
+    injectChat: true, // also tell the chat model what is worn, so it writes the outfit into the image prompt
     folders: [],
     outfits: [],
 });
@@ -251,13 +254,19 @@ function syncKey(kind, key) {
     if (!Array.isArray(entry.appearanceItems)) entry.appearanceItems = [];
     if (!outfit) return;
     const parts = outfitParts(outfit);
+    // Direct NovelAI turns library descriptions into extra "| ..." character prompts (and ignores pictures),
+    // which does not attach to the scene's own characters. So there the chat model writes the outfit
+    // (see updateInjection) and the library text is opt-in.
+    const naiDirect = ctx().extensionSettings?.[IIG_MODULE]?.apiType === 'novelai';
+    if (naiDirect) parts.image = false;
+    if (naiDirect && !s.novelaiLibraryText) parts.prompt = false;
     if (parts.prompt) {
         entry.appearanceItems.push({
             id: `${MANAGED_PREFIX}text`,
             type: 'text',
             enabled: true,
             imagePath: '',
-            description: `${s.textPrefix || ''}${String(outfit.prompt).trim()}`.trim(),
+            description: `${naiDirect ? '' : (s.textPrefix || '')}${String(outfit.prompt).trim()}`.trim(),
         });
     }
     if (parts.image) {
@@ -280,7 +289,35 @@ function syncAll() {
         for (const entry of Object.values(bucket)) stripManaged(entry);
     }
     for (const kind of ['char', 'user']) syncKey(kind, keys[kind]);
+    updateInjection();
     save();
+}
+
+
+// Chat-model injection: independent of the sillyimages library. The image prompt is written by the chat
+// model (the "prompt" / per-character prompts in the image tag), so telling it what is worn per chat
+// puts the outfit into the picture prompt for every provider, including text-only ones like NovelAI.
+function buildInjection() {
+    const s = getSettings();
+    if (!s.injectChat || !chatOpen()) return '';
+    const lines = [];
+    for (const kind of ['char', 'user']) {
+        const outfit = getOutfit(wornId(kind));
+        const text = outfit ? String(outfit.prompt || outfit.name || '').trim() : '';
+        if (text) lines.push(`${displayName(kind)} is currently wearing: ${text}`);
+    }
+    if (!lines.length) return '';
+    return `[Current outfits. ${lines.join('. ')}. When you write an image prompt (including per-character prompts), describe exactly this clothing for the matching character, using the same wording style as the rest of the prompt. Change it only if the story changes what they wear.]`;
+}
+
+function updateInjection() {
+    try {
+        const c = ctx();
+        if (typeof c.setExtensionPrompt !== 'function') return;
+        const pos = c.extension_prompt_types?.IN_CHAT ?? 1;
+        const role = c.extension_prompt_roles?.SYSTEM ?? 0;
+        c.setExtensionPrompt(EXT_PROMPT_KEY, buildInjection(), pos, 1, false, role);
+    } catch (e) { recordError('inject', e?.message || String(e)); }
 }
 
 // ---------------------------------------------------------------- wearing
@@ -298,6 +335,7 @@ function wear(kind, outfitId) {
     st[kind] = outfitId;
     saveChat();
     syncKey(kind, key);
+    updateInjection();
     save();
     return true;
 }
@@ -309,6 +347,7 @@ function unwear(kind) {
         saveChat();
     }
     syncKey(kind, keys[kind]);
+    updateInjection();
     save();
 }
 
@@ -330,7 +369,7 @@ function unwearEverywhere(outfitId) {
     for (const kind of ['char', 'user']) {
         if (st[kind] === outfitId) { st[kind] = null; changed = true; }
     }
-    if (changed) saveChat();
+    if (changed) { saveChat(); updateInjection(); }
 }
 
 // ---------------------------------------------------------------- images
@@ -1372,6 +1411,24 @@ async function runDiagnostics() {
         info('Character key', String(keys.char));
         info('Persona key', String(keys.user));
         info('Worn (this char / persona)', `${wornId('char') || '-'} / ${wornId('user') || '-'}`);
+        info('Chat open', String(chatOpen()));
+        {
+            const iig = ctx().extensionSettings?.[IIG_MODULE] || {};
+            info('sillyimages apiType', String(iig.apiType));
+            info('sillyimages sendRefDescriptions', String(iig.sendRefDescriptions));
+            info('sillyimages NovelAI descriptions mode', String(iig.novelaiCharacterDescriptionsMode));
+            info('sillyimages Naistera descriptions mode', String(iig.naisteraCharacterDescriptionsMode));
+            if (iig.apiType === 'novelai') info('Outfit route on direct NovelAI', 'chat model writes it (library text only if the NovelAI checkbox is on)');
+        }
+        info('Worn state stored in this chat', JSON.stringify(chatState() || null));
+        info('Chat-model injection', buildInjection() || '(nothing — no outfit worn, setting off, or no chat)');
+        for (const kind of ['char', 'user']) {
+            const entry = iigBucket(kind)?.[keys[kind]];
+            const items = (entry?.appearanceItems || []).filter((i) => String(i?.id || '').startsWith(MANAGED_PREFIX));
+            info(`sillyimages library entry (${kind})`, entry
+                ? (items.length ? items.map((i) => `${i.type}: ${(i.description || i.imagePath || '').slice(0, 80)}`).join(' | ') : 'entry exists, no wardrobe items')
+                : 'no entry for this key');
+        }
         const odd = s.outfits.filter((o) => !o || !o.id || typeof o.name !== 'string' || !Array.isArray(o.tags));
         (odd.length ? bad : ok)('Outfit records valid', odd.length ? `${odd.length} malformed (missing id / name / tags array)` : 'all fine');
         const dup = s.outfits.length - new Set(s.outfits.map((o) => o?.id)).size;
@@ -1549,8 +1606,18 @@ function buildSettingsDrawer() {
                     <input type="range" id="wd_set_opacity" min="30" max="100" step="1" value="${clampOpacity(s.opacity)}">
                 </label>
 
+                <label class="checkbox_label wd-set-check">
+                    <input type="checkbox" id="wd_inject" ${s.injectChat ? 'checked' : ''}>
+                    <span>Tell the chat model what is worn (so it writes the outfit into the image prompt)</span>
+                </label>
+
+                <label class="checkbox_label wd-set-check">
+                    <input type="checkbox" id="wd_nai_lib" ${s.novelaiLibraryText ? 'checked' : ''}>
+                    <span>Direct NovelAI: also send the outfit as an extra character prompt (usually leave off)</span>
+                </label>
+
                 <div class="wd-set-title">Chat model macros</div>
-                <p class="wd-set-hint">Put <code>{{outfit_char}}</code> or <code>{{outfit_user}}</code> in a card or preset so the chat model knows what is worn and writes matching image prompts.</p>
+                <p class="wd-set-hint">The checkbox above already does this automatically. Use <code>{{outfit_char}}</code> / <code>{{outfit_user}}</code> only if you want to place the outfit text yourself, and then turn the checkbox off to avoid sending it twice.</p>
 
                 <div class="wd-set-title">Diagnostics</div>
                 <p class="wd-set-hint">If something does not work, run this and send me the report.</p>
@@ -1587,6 +1654,15 @@ function buildSettingsDrawer() {
     });
     root.querySelector('#wd_fallback').addEventListener('change', (e) => {
         getSettings().fallback = e.target.checked;
+        syncAll();
+    });
+    root.querySelector('#wd_inject').addEventListener('change', (e) => {
+        getSettings().injectChat = e.target.checked;
+        updateInjection();
+        save();
+    });
+    root.querySelector('#wd_nai_lib').addEventListener('change', (e) => {
+        getSettings().novelaiLibraryText = e.target.checked;
         syncAll();
     });
     root.querySelector('#wd_prefix').addEventListener('input', (e) => {
