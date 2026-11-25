@@ -542,3 +542,22 @@ html.wd-lock, html.wd-lock body { overflow: hidden; }
     background: var(--wd-raise); color: var(--wd-ink); font: inherit;
 }
 .wd-auto-preview { margin: 0; padding: 10px 12px; border: 1px solid var(--wd-line); border-radius: 10px; background: var(--wd-raise); white-space: pre-wrap; font-size: 0.85rem; }
+
+/* ---- auto pool: pick outfits by picture */
+.wd-pool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: 8px; }
+.wd-pcard {
+    position: relative; display: flex; flex-direction: column; gap: 4px; padding: 5px; text-align: left;
+    border: 1.5px solid var(--wd-line); border-radius: 12px; background: var(--wd-raise); color: var(--wd-ink);
+    font: inherit; cursor: pointer; min-width: 0;
+}
+.wd-pcard-media { position: relative; display: block; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; background: var(--wd-raise-2); }
+.wd-pcard-media img { width: 100%; height: 100%; object-fit: cover; display: block; -webkit-user-drag: none; }
+.wd-pcard strong { font-size: 0.78rem; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wd-pcard small { font-size: 0.68rem; color: var(--wd-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wd-pcard-check {
+    position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; border-radius: 50%;
+    display: none; place-items: center; font-size: 0.7rem; color: #17161d; background: var(--wd-accent);
+}
+.wd-pcard.is-on { border-color: var(--wd-accent); background: var(--wd-accent-soft); }
+.wd-pcard.is-on .wd-pcard-check { display: grid; }
+.wd-pcard:not(.is-on) .wd-pcard-media { opacity: 0.72; }

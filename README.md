@@ -1,12 +1,12 @@
-# Wardrobe for Inline Image Generation
+# Wardrobe
 
-An outfit manager for SillyTavern that plugs into **sillyimages** (Inline Image Generation).
+An outfit manager for SillyTavern that works with any image generator: outfits are saved per chat and can be picked automatically from the scene.
 Works on PC and mobile (full-screen panel and bottom sheets on phones).
 
 ## Install
 SillyTavern → Extensions → Install extension → paste this repo's URL,
 or copy the `sillywardrobe` folder to `SillyTavern/data/<user>/extensions/`.
-Requires the sillyimages extension to be installed and enabled.
+No other extension is required. If you use sillyimages, SillyTavern's Image Generation or any other generator, see *Works with any image generator* below.
 
 ## Use
 - Open the wardrobe from the **wand menu → Wardrobe** or **Extensions → Wardrobe → Open wardrobe**.
@@ -15,7 +15,7 @@ Requires the sillyimages extension to be installed and enabled.
   **Worn outfits are saved per chat**: every chat remembers what the character and your persona wear in it, so two chats with the same character can have different outfits. The outfit library itself (pictures, folders, tags) is shared by all chats.
 - Folders: **+ Folder**, then **Edit** to rename or delete. Tags: tap to filter; search covers names, prompts and tags.
 
-## What gets sent (Extensions → Wardrobe)
+## sillyimages library: what gets sent (Extensions → Wardrobe)
 - **Prompt**: the outfit text goes into the image prompt.
 - **Picture**: the outfit image goes out as a reference image.
 - **Both**: text and image.
@@ -28,12 +28,11 @@ The droplet button in the panel header (or **Extensions → Wardrobe → Panel o
 Extensions → Wardrobe → **Run diagnostics** briefly opens the panel, tests +Outfit, saving and editing, checks for duplicate installs, and shows a report you can copy.
 
 ## How it connects
-The worn outfit is written into sillyimages' *Character library* as managed items (ids start with `wardrobe-`),
-so it is sent with every generation. No sillyimages files are modified.
-Pictures are only used if the provider/model supports reference images.
+Wardrobe is not tied to one extension; see *Works with any image generator* below for every route.
+With sillyimages installed, the worn outfit is also written into its *Character library* as managed items (ids start with `wardrobe-`), so it is sent with every generation. No sillyimages files are modified. Pictures are only used if the provider/model supports reference images.
 
 ## Chat-model macros
-`{{outfit_char}}` and `{{outfit_user}}` insert the worn outfit prompt into a card or preset,
+`{{outfit_char}}`, `{{outfit_user}}` and `{{outfit_both}}` insert the worn outfit prompt into a card or preset,
 so the chat model writes matching image prompts.
 
 ## Backup

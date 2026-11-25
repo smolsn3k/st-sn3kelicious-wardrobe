@@ -1,12 +1,12 @@
 {
-    "display_name": "Wardrobe (for Inline Image Generation)",
+    "display_name": "Wardrobe",
     "loading_order": 200,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
     "author": "wardrobe",
-    "version": "1.4.0",
+    "version": "1.4.1",
     "homePage": "",
     "auto_update": false
 }

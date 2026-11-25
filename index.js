@@ -1,12 +1,14 @@
 /**
- * Wardrobe — outfit manager for SillyTavern that plugs into "Inline Image Generation" (sillyimages).
+ * Wardrobe — outfit manager for SillyTavern. It works with any image generator.
  *
- * How it connects: the outfit that a character / persona is wearing is written into the sillyimages
- * Character library as managed "appearance items" (ids start with `wardrobe-`). sillyimages already
- * sends those items with every generation, so no patching of sillyimages is needed.
- *   - outfit prompt  -> text appearance item   (goes into the image prompt / descriptions)
- *   - outfit picture -> image appearance item  (goes out as a reference image)
- * What is sent is chosen in the Wardrobe settings: prompt, picture or both.
+ * The outfit a character / persona / NPC wears in a chat (stored per chat) is offered through:
+ *   - chat-model injection (the model writes the outfit into the image prompt)
+ *   - SillyTavern's built-in Image Generation (sd_prompt_processing event)
+ *   - the sillyimages character library (managed "appearance items", ids start with `wardrobe-`)
+ *   - an opt-in catch-all hook on outgoing image requests of any extension
+ *   - window.WardrobeAPI, the `wardrobe_changed` event, macros and slash commands
+ *
+ * Auto outfits pick from a pool by what the recent messages are about (lorebook-style tag triggers).
  */
 
 const MODULE_NAME = 'wardrobe';
@@ -653,16 +655,21 @@ function renderPanel() {
     renderGrid();
 }
 
+function anyOutputOn() {
+    const s = getSettings();
+    return !!(s.injectChat || s.sdHook || s.fetchHook || (s.libraryAdapter !== false && iigPresent()));
+}
+
 function renderNotice() {
     const el = overlay.querySelector('#wd_notice');
-    if (iigPresent()) {
+    if (anyOutputOn()) {
         el.innerHTML = '';
         return;
     }
     el.innerHTML = `
         <div class="wd-notice">
-            <b>Inline Image Generation not found.</b>
-            Outfits are saved, but nothing is sent to image generation until that extension is installed and enabled.
+            <b>No output is switched on.</b>
+            Outfits are saved, but nothing is sent anywhere. Turn a route on under Extensions → Wardrobe.
         </div>`;
 }
 
@@ -724,11 +731,20 @@ function poolChipsHtml(subject) {
     const chosen = new Set(ref.get());
     const outfits = [...getSettings().outfits].sort((x, y) => String(x.name).localeCompare(String(y.name)));
     if (!outfits.length) return '<p class="wd-hint">Add some outfits first.</p>';
-    const chips = outfits.map((o) => `
-        <button class="wd-chip ${chosen.has(o.id) ? 'is-active' : ''}" data-act="auto-pool" data-subject="${esc(subject)}" data-id="${esc(o.id)}" aria-pressed="${chosen.has(o.id)}">
-            <span>${esc(o.name)}</span><em>${esc((o.tags || []).slice(0, 3).map((x) => `#${x}`).join(' '))}</em>
-        </button>`).join('');
-    return `<div class="wd-pool">${chips}</div>
+    const cards = outfits.map((o) => {
+        const on = chosen.has(o.id);
+        const media = o.image
+            ? `<img src="${esc(o.image)}" alt="" loading="lazy" draggable="false">`
+            : `<span class="wd-card-ph">${ICON.shirt}</span>`;
+        const tags = (o.tags || []).slice(0, 3).map((x) => `#${esc(x)}`).join(' ');
+        return `
+        <button class="wd-pcard ${on ? 'is-on' : ''}" data-act="auto-pool" data-subject="${esc(subject)}" data-id="${esc(o.id)}" aria-pressed="${on}" aria-label="${esc(o.name)}">
+            <span class="wd-pcard-media">${media}<span class="wd-pcard-check" aria-hidden="true">${ICON.check}</span></span>
+            <strong>${esc(o.name)}</strong>
+            <small>${tags || 'no tags'}</small>
+        </button>`;
+    }).join('');
+    return `<div class="wd-pool-grid">${cards}</div>
         <div class="wd-pool-tools">
             <button class="wd-btn wd-btn-soft" data-act="auto-pool-all" data-subject="${esc(subject)}"><span>All</span></button>
             <button class="wd-btn wd-btn-soft" data-act="auto-pool-none" data-subject="${esc(subject)}"><span>None</span></button>
@@ -1832,7 +1848,7 @@ function buildSettingsDrawer() {
                 <div class="wd-set-status" id="wd_status"></div>
                 <button class="wd-btn wd-btn-accent wd-set-open" id="wd_open_btn">${ICON.shirt}<span>Open wardrobe</span></button>
 
-                <div class="wd-set-title">What to send to image generation</div>
+                <div class="wd-set-title">sillyimages library: what to send</div>
                 <div class="wd-segs" id="wd_modes">
                     ${radio('prompt', 'Prompt', 'Text only')}
                     ${radio('picture', 'Picture', 'Reference image')}
@@ -1914,11 +1930,17 @@ function buildSettingsDrawer() {
     const root = document.getElementById('wd_settings_root');
     const updateStatus = () => {
         const el = root.querySelector('#wd_status');
-        const ok = iigPresent();
+        const s = getSettings();
+        const routes = [];
+        if (s.injectChat) routes.push('chat model');
+        if (s.sdHook) routes.push('ST Image Generation');
+        if (s.libraryAdapter !== false && iigPresent()) routes.push('sillyimages');
+        if (s.fetchHook) routes.push('catch-all');
+        const ok = routes.length > 0;
         el.className = `wd-set-status ${ok ? 'is-ok' : 'is-bad'}`;
         el.innerHTML = ok
-            ? `${ICON.check}<span>Connected to Inline Image Generation</span>`
-            : `${ICON.close}<span>Inline Image Generation not detected</span>`;
+            ? `${ICON.check}<span>Sending outfits to: ${esc(routes.join(', '))}</span>`
+            : `${ICON.close}<span>No output is switched on</span>`;
     };
     updateStatus();
     root.querySelector('.inline-drawer-toggle').addEventListener('click', updateStatus);
@@ -1939,6 +1961,8 @@ function buildSettingsDrawer() {
         getSettings().injectChat = e.target.checked;
         updateInjection();
         save();
+        updateStatus();
+        if (ui.open && overlay) renderNotice();
     });
     root.querySelector('#wd_nai_lib').addEventListener('change', (e) => {
         getSettings().novelaiLibraryText = e.target.checked;
@@ -1947,14 +1971,20 @@ function buildSettingsDrawer() {
     root.querySelector('#wd_lib').addEventListener('change', (e) => {
         getSettings().libraryAdapter = e.target.checked;
         syncAll();
+        updateStatus();
+        if (ui.open && overlay) renderNotice();
     });
     root.querySelector('#wd_sdhook').addEventListener('change', (e) => {
         getSettings().sdHook = e.target.checked;
         save();
+        updateStatus();
+        if (ui.open && overlay) renderNotice();
     });
     root.querySelector('#wd_fetch').addEventListener('change', (e) => {
         getSettings().fetchHook = e.target.checked;
         save();
+        updateStatus();
+        if (ui.open && overlay) renderNotice();
     });
     root.querySelector('#wd_hooktarget').addEventListener('change', (e) => {
         getSettings().hookTarget = e.target.value;
