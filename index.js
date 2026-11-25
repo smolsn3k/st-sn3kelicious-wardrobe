@@ -31,6 +31,14 @@ const DEFAULTS = Object.freeze({
     hookTarget: 'char', // which outfit(s) the catch-all adds: char | user | both
     hookPatterns: '/api/sd/\n/api/novelai/\n/generate-image\n/images/generations\n/sdapi/v1/txt2img\n/sdapi/v1/img2img',
     injectChat: true, // also tell the chat model what is worn, so it writes the outfit into the image prompt
+    auto: {
+        enabled: false, // auto outfits: pick from a pool by what the scene is about (like a lorebook)
+        scanDepth: 3, // how many recent messages are read
+        fallback: 'keep', // nothing matches: 'keep' the current outfit | 'default' (tag "default") | 'off' (undress)
+        tagKeywords: {}, // extra trigger words per tag: { home: 'flat, my place, /regex/' }
+        pools: {}, // { 'char:<key>': [outfitId], 'user:<key>': [outfitId] }
+        npcs: [], // [{ id, name, aliases, pool: [outfitId] }]
+    },
     folders: [],
     outfits: [],
 });
@@ -312,6 +320,7 @@ function buildInjection() {
         const text = outfit ? String(outfit.prompt || outfit.name || '').trim() : '';
         if (text) lines.push(`${displayName(kind)} is currently wearing: ${text}`);
     }
+    for (const n of presentNpcOutfits()) lines.push(`${n.name} is currently wearing: ${n.prompt}`);
     if (!lines.length) return '';
     return `[Current outfits. ${lines.join('. ')}. When you write an image prompt (including per-character prompts), describe exactly this clothing for the matching character, using the same wording style as the rest of the prompt. Change it only if the story changes what they wear.]`;
 }
@@ -334,12 +343,23 @@ function wornId(kind) {
     return id && getOutfit(id) ? id : null;
 }
 
-function wear(kind, outfitId) {
+// A manual change while auto mode is active pins that subject in this chat until "Resume auto" is pressed.
+function pinIfAuto(kind, opts) {
+    if (opts?.auto || !autoActive() || !hasPool(kind)) return;
+    const st = chatState(true);
+    if (st) {
+        st.pins = st.pins && typeof st.pins === 'object' ? st.pins : {};
+        st.pins[kind] = true;
+    }
+}
+
+function wear(kind, outfitId, opts = {}) {
     const key = keys[kind];
     if (!key || !chatOpen()) return false;
     const st = chatState(true);
     if (!st) return false;
     st[kind] = outfitId;
+    pinIfAuto(kind, opts);
     saveChat();
     syncKey(kind, key);
     updateInjection();
@@ -347,12 +367,11 @@ function wear(kind, outfitId) {
     return true;
 }
 
-function unwear(kind) {
+function unwear(kind, opts = {}) {
     const st = chatState();
-    if (st) {
-        st[kind] = null;
-        saveChat();
-    }
+    if (st) st[kind] = null;
+    pinIfAuto(kind, opts);
+    if (st) saveChat();
     syncKey(kind, keys[kind]);
     updateInjection();
     save();
@@ -375,6 +394,9 @@ function unwearEverywhere(outfitId) {
     let changed = false;
     for (const kind of ['char', 'user']) {
         if (st[kind] === outfitId) { st[kind] = null; changed = true; }
+    }
+    for (const [npcId, id] of Object.entries(st.npcs || {})) {
+        if (id === outfitId) { delete st.npcs[npcId]; changed = true; }
     }
     if (changed) { saveChat(); updateInjection(); }
 }
@@ -593,6 +615,8 @@ function buildOverlay() {
         renderGrid();
     });
     overlay.querySelector('#wd_file').addEventListener('change', onFilePicked);
+    overlay.querySelector('#wd_sheet_layer').addEventListener('input', onAutoField);
+    overlay.querySelector('#wd_sheet_layer').addEventListener('change', onAutoField);
     overlay.querySelector('#wd_opacity').addEventListener('input', (e) => setOpacity(e.target.value));
     applyOpacity();
     return overlay;
@@ -666,8 +690,161 @@ function slotHtml(kind) {
         </div>`;
 }
 
+function autoBarHtml() {
+    const a = autoCfg();
+    const st = chatState();
+    const state = !a.enabled ? 'Off' : (st?.autoOff ? 'Paused here' : 'On');
+    let html = `<button class="wd-chip ${autoActive() ? 'is-active' : ''}" data-act="auto-open"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Auto outfits</span><em>${state}</em></button>`;
+    if (autoActive()) {
+        for (const kind of ['char', 'user']) {
+            if (st?.pins?.[kind]) {
+                html += `<button class="wd-chip wd-chip-ghost" data-act="auto-resume" data-kind="${kind}"><span>Resume auto for ${esc(displayName(kind))}</span></button>`;
+            }
+        }
+    }
+    return `<div class="wd-autobar">${html}</div>`;
+}
+
 function renderRail() {
-    overlay.querySelector('#wd_rail').innerHTML = slotHtml('char') + slotHtml('user');
+    overlay.querySelector('#wd_rail').innerHTML = slotHtml('char') + slotHtml('user') + autoBarHtml();
+}
+
+// ---------------------------------------------------------------- UI: auto sheet
+
+function openAutoSheet() {
+    ui.sheet = { auto: true };
+    renderAutoSheet();
+    const layer = overlay.querySelector('#wd_sheet_layer');
+    layer.hidden = false;
+    requestAnimationFrame(() => layer.classList.add('is-in'));
+}
+
+function poolChipsHtml(subject) {
+    const ref = poolRef(subject);
+    const chosen = new Set(ref.get());
+    const outfits = [...getSettings().outfits].sort((x, y) => String(x.name).localeCompare(String(y.name)));
+    if (!outfits.length) return '<p class="wd-hint">Add some outfits first.</p>';
+    const chips = outfits.map((o) => `
+        <button class="wd-chip ${chosen.has(o.id) ? 'is-active' : ''}" data-act="auto-pool" data-subject="${esc(subject)}" data-id="${esc(o.id)}" aria-pressed="${chosen.has(o.id)}">
+            <span>${esc(o.name)}</span><em>${esc((o.tags || []).slice(0, 3).map((x) => `#${x}`).join(' '))}</em>
+        </button>`).join('');
+    return `<div class="wd-pool">${chips}</div>
+        <div class="wd-pool-tools">
+            <button class="wd-btn wd-btn-soft" data-act="auto-pool-all" data-subject="${esc(subject)}"><span>All</span></button>
+            <button class="wd-btn wd-btn-soft" data-act="auto-pool-none" data-subject="${esc(subject)}"><span>None</span></button>
+        </div>`;
+}
+
+function renderAutoSheet() {
+    if (!ui.sheet?.auto) return;
+    const a = autoCfg();
+    const st = chatState();
+    const subjectBlock = (subject, label, icon) => {
+        const ref = poolRef(subject);
+        return `<div class="wd-block">
+            <div class="wd-label">${icon} ${esc(label)}</div>
+            ${ref.ok ? poolChipsHtml(subject) : '<p class="wd-hint">Open a chat first.</p>'}
+        </div>`;
+    };
+    const npcs = a.npcs.map((n) => `
+        <div class="wd-npc">
+            <div class="wd-npc-head">
+                <input type="text" data-npc="${esc(n.id)}" data-npcf="name" value="${esc(n.name)}" placeholder="NPC name" maxlength="40" autocomplete="off">
+                <button class="wd-icon-btn" data-act="auto-npc-del" data-id="${esc(n.id)}" aria-label="Remove NPC">${ICON.trash}</button>
+            </div>
+            <input type="text" data-npc="${esc(n.id)}" data-npcf="aliases" value="${esc(n.aliases || '')}" placeholder="Other names, nicknames (comma separated)" maxlength="120" autocomplete="off">
+            ${poolChipsHtml(`npc:${n.id}`)}
+        </div>`).join('');
+    const poolTags = new Set();
+    const pools = [poolRef('char').get(), poolRef('user').get(), ...a.npcs.map((n) => n.pool || [])];
+    for (const pool of pools) for (const id of pool) for (const tag of getOutfit(id)?.tags || []) poolTags.add(tag);
+    const kwRows = [...poolTags].sort().map((tag) => {
+        const builtIn = tagKeywordList(tag).filter((k) => k !== tag).slice(0, 5).join(', ');
+        return `<label class="wd-field">
+            <span class="wd-label">#${esc(tag)} <small class="wd-muted">${builtIn ? `built in: ${esc(builtIn)}…` : 'only the tag itself'}</small></span>
+            <input type="text" data-kw="${esc(tag)}" value="${esc(a.tagKeywords[tag] || '')}" placeholder="extra trigger words, or /regex/" autocomplete="off">
+        </label>`;
+    }).join('');
+    overlay.querySelector('#wd_sheet_layer').innerHTML = `
+        <div class="wd-sheet-scrim" data-act="sheet-close"></div>
+        <section class="wd-sheet" role="dialog" aria-modal="true" aria-label="Auto outfits">
+            <div class="wd-sheet-grab" aria-hidden="true"></div>
+            <div class="wd-sheet-head">
+                <h3>Auto outfits</h3>
+                <button class="wd-icon-btn" data-act="sheet-close" aria-label="Close">${ICON.close}</button>
+            </div>
+            <div class="wd-sheet-body">
+                <div class="wd-block">
+                    <div class="wd-pool">
+                        <button class="wd-chip ${a.enabled ? 'is-active' : ''}" data-act="auto-master" aria-pressed="${a.enabled}"><span>Auto mode</span><em>${a.enabled ? 'On' : 'Off'}</em></button>
+                        <button class="wd-chip ${st?.autoOff ? '' : 'is-active'}" data-act="auto-chat" aria-pressed="${!st?.autoOff}"><span>This chat</span><em>${st?.autoOff ? 'Paused' : 'Active'}</em></button>
+                    </div>
+                    <p class="wd-hint">Like a lorebook: each outfit's tags are trigger words. The recent messages are read, and the best match from the pool below is worn. Wearing something by hand pins it until you press "Resume auto".</p>
+                </div>
+
+                <div class="wd-block">
+                    <label class="wd-field">
+                        <span class="wd-label">Messages to read</span>
+                        <input id="wd_auto_depth" type="number" min="1" max="12" value="${a.scanDepth}">
+                    </label>
+                    <label class="wd-field">
+                        <span class="wd-label">When nothing matches</span>
+                        <select id="wd_auto_fallback">
+                            <option value="keep" ${a.fallback === 'keep' ? 'selected' : ''}>Keep the current outfit</option>
+                            <option value="default" ${a.fallback === 'default' ? 'selected' : ''}>Wear the outfit tagged "default"</option>
+                            <option value="off" ${a.fallback === 'off' ? 'selected' : ''}>Take the outfit off</option>
+                        </select>
+                    </label>
+                </div>
+
+                ${subjectBlock('char', `${displayName('char')} pool`, ICON.bot)}
+                ${subjectBlock('user', `${displayName('user')} pool`, ICON.user)}
+
+                <div class="wd-block">
+                    <div class="wd-label">NPCs (found by name in the messages)</div>
+                    ${npcs || '<p class="wd-hint">No NPCs yet.</p>'}
+                    <button class="wd-btn wd-btn-soft" data-act="auto-npc-add">${ICON.plus}<span>Add NPC</span></button>
+                </div>
+
+                <div class="wd-block">
+                    <div class="wd-label">Trigger words per tag</div>
+                    ${kwRows || '<p class="wd-hint">Pick outfits for a pool above and their tags show up here. Add words like "my place" or a /regex/ to make a tag fire more often.</p>'}
+                </div>
+
+                <div class="wd-block">
+                    <button class="wd-btn wd-btn-soft" data-act="auto-preview"><span>What would be worn right now?</span></button>
+                    <pre class="wd-auto-preview" id="wd_auto_preview" hidden></pre>
+                </div>
+            </div>
+        </section>`;
+}
+
+function autoRefresh() {
+    autoEvaluate();
+    if (ui.sheet?.auto) renderAutoSheet();
+    if (overlay && ui.open) { renderRail(); renderGrid(); }
+}
+
+function onAutoField(e) {
+    if (!ui.sheet?.auto) return;
+    const el = e.target;
+    const a = autoCfg();
+    if (el.id === 'wd_auto_depth') {
+        a.scanDepth = Math.min(12, Math.max(1, Math.round(Number(el.value)) || 3));
+        save();
+    } else if (el.id === 'wd_auto_fallback') {
+        a.fallback = el.value;
+        save();
+    } else if (el.dataset.kw !== undefined) {
+        a.tagKeywords[el.dataset.kw] = el.value;
+        save();
+    } else if (el.dataset.npcf) {
+        const npc = a.npcs.find((n) => n.id === el.dataset.npc);
+        if (npc) { npc[el.dataset.npcf] = el.value; save(); }
+    } else {
+        return;
+    }
+    if (e.type === 'change') { autoEvaluate(); renderRail(); }
 }
 
 function renderFolders() {
@@ -1096,6 +1273,69 @@ async function onOverlayClickInner(e) {
             break;
         }
         case 'new': openSheet(null); break;
+        case 'auto-open': openAutoSheet(); break;
+        case 'auto-master': {
+            const a = autoCfg();
+            a.enabled = !a.enabled;
+            save();
+            updateInjection();
+            autoRefresh();
+            break;
+        }
+        case 'auto-chat': {
+            const st = chatState(true);
+            if (st) { st.autoOff = !st.autoOff; saveChat(); }
+            updateInjection();
+            autoRefresh();
+            break;
+        }
+        case 'auto-resume': {
+            const st = chatState();
+            if (st?.pins) { delete st.pins[kind]; saveChat(); }
+            autoRefresh();
+            break;
+        }
+        case 'auto-pool': {
+            const ref = poolRef(target.dataset.subject);
+            if (!ref.ok) break;
+            const list = new Set(ref.get());
+            if (list.has(id)) list.delete(id); else list.add(id);
+            ref.set([...list]);
+            save();
+            autoRefresh();
+            break;
+        }
+        case 'auto-pool-all':
+        case 'auto-pool-none': {
+            const ref = poolRef(target.dataset.subject);
+            if (!ref.ok) break;
+            ref.set(act === 'auto-pool-all' ? getSettings().outfits.map((o) => o.id) : []);
+            save();
+            autoRefresh();
+            break;
+        }
+        case 'auto-npc-add': {
+            const name = await askDialog({ title: 'New NPC', message: 'The name that appears in the chat. Wardrobe looks for it in the recent messages.', value: '', ok: 'Add' });
+            if (!name) break;
+            autoCfg().npcs.push({ id: uid('n'), name, aliases: '', pool: [] });
+            save();
+            renderAutoSheet();
+            break;
+        }
+        case 'auto-npc-del': {
+            const a = autoCfg();
+            a.npcs = a.npcs.filter((n) => n.id !== id);
+            const st = chatState();
+            if (st?.npcs) { delete st.npcs[id]; saveChat(); }
+            save();
+            autoRefresh();
+            break;
+        }
+        case 'auto-preview': {
+            const box = overlay.querySelector('#wd_auto_preview');
+            if (box) { box.textContent = autoPreview(); box.hidden = false; }
+            break;
+        }
         case 'open': openSheet(id); break;
         case 'toggle':
             e.stopPropagation();
@@ -1420,6 +1660,8 @@ async function runDiagnostics() {
         info('Worn (this char / persona)', `${wornId('char') || '-'} / ${wornId('user') || '-'}`);
         info('Chat open', String(chatOpen()));
         info('Outputs', `chat-model injection: ${getSettings().injectChat} | ST Image Generation hook: ${getSettings().sdHook} | sillyimages library: ${getSettings().libraryAdapter !== false} | catch-all: ${getSettings().fetchHook} (${getSettings().hookTarget})`);
+        info('Auto outfits', `${autoActive() ? 'active' : 'inactive'} (master ${autoCfg().enabled}, chat paused ${!!chatState()?.autoOff}); pools: ${Object.keys(autoCfg().pools).length}, NPCs: ${autoCfg().npcs.length}`);
+        info('Auto preview', autoPreview().replace(/\n/g, ' | '));
         info('Public API', typeof window.WardrobeAPI === 'object' ? 'window.WardrobeAPI ready' : 'missing');
         {
             const iig = ctx().extensionSettings?.[IIG_MODULE] || {};
@@ -1644,6 +1886,7 @@ function buildSettingsDrawer() {
                         <option value="char" ${s.hookTarget === 'char' ? 'selected' : ''}>Character outfit</option>
                         <option value="user" ${s.hookTarget === 'user' ? 'selected' : ''}>Persona outfit</option>
                         <option value="both" ${s.hookTarget === 'both' ? 'selected' : ''}>Both</option>
+                        <option value="all" ${s.hookTarget === 'all' ? 'selected' : ''}>Everyone in the scene (incl. NPCs)</option>
                     </select>
                 </div>
                 <div class="wd-set-row" style="flex-direction:column">
@@ -1770,6 +2013,250 @@ function addMenuEntry() {
     menu.appendChild(item);
 }
 
+// ---------------------------------------------------------------- auto outfits (lorebook-style)
+// Every outfit's tags act like lorebook keys. The recent messages are scanned; a tag "fires" when one of its
+// trigger words appears (built-in synonyms + your own words / /regex/). The best-scoring outfit from the
+// subject's pool is worn. Nothing fires -> the current outfit stays (default), so a scene change is needed to swap.
+
+const TAG_KEYWORDS = {
+    home: 'home, house, apartment, flat, bedroom, living room, couch, sofa, kitchen, indoors, дом, дома, квартира, спальня, кухня, гостиная, диван',
+    sleep: 'sleep, asleep, bed, bedtime, nap, yawn, pillow, сон, спать, постель, подушка, зевать',
+    night: 'night, evening, midnight, moonlight, late, dusk, ночь, ночью, вечер, вечером, полночь, луна',
+    morning: 'morning, sunrise, dawn, wake up, breakfast, утро, утром, рассвет, завтрак',
+    winter: 'winter, snow, snowing, cold, frost, freezing, blizzard, icy, зима, снег, мороз, холод, метель',
+    summer: 'summer, hot, heat, sunny, sunshine, sweltering, лето, жара, жарко, солнце',
+    spring: 'spring, bloom, blossom, весна, цветение',
+    autumn: 'autumn, fall, leaves, foliage, осень, листья, листопад',
+    rain: 'rain, rainy, drizzle, storm, umbrella, soaked, дождь, ливень, гроза, зонт, промокнуть',
+    beach: 'beach, sea, ocean, shore, sand, waves, seaside, coast, пляж, море, океан, песок',
+    swim: 'pool, swim, swimming, lake, diving, бассейн, плавать, озеро, купаться',
+    gym: 'gym, workout, exercise, training, jog, running, yoga, fitness, sport, спортзал, тренировка, бег, йога, спорт',
+    work: 'work, office, meeting, desk, boss, colleague, job, shift, офис, работа, совещание, начальник, коллега',
+    school: 'school, class, classroom, lecture, university, campus, teacher, student, homework, школа, урок, университет, лекция, учитель',
+    formal: 'formal, gala, ball, wedding, ceremony, banquet, opera, black tie, свадьба, бал, церемония, банкет, торжество',
+    party: 'party, club, nightclub, dance, dancing, bar, drinks, festival, вечеринка, клуб, танцы, бар, фестиваль',
+    date: 'date, restaurant, dinner, romantic, candlelight, свидание, ресторан, ужин, романтика',
+    casual: 'casual, walk, shopping, mall, cafe, coffee, park, street, прогулка, магазин, кафе, кофе, парк, улица',
+    outdoors: 'outdoors, forest, hike, hiking, camping, mountain, trail, woods, field, лес, поход, горы, кемпинг, поле',
+    travel: 'travel, trip, airport, flight, train, road trip, hotel, luggage, путешествие, поездка, аэропорт, поезд, отель, чемодан',
+    bath: 'bath, shower, bathroom, spa, sauna, towel, ванна, душ, баня, сауна, полотенце',
+    fight: 'fight, battle, combat, sword, quest, dungeon, war, armor, бой, битва, меч, подземелье, война, доспехи',
+    holiday: 'christmas, xmas, new year, holiday, halloween, рождество, новый год, праздник, хэллоуин',
+    cooking: 'cook, cooking, bake, baking, apron, готовить, готовка, выпечка, фартук',
+};
+
+// Tag names that map onto a built-in set.
+const TAG_ALIASES = {
+    fall: 'autumn', sport: 'gym', workout: 'gym', office: 'work', pajamas: 'sleep', sleepwear: 'sleep', nightwear: 'sleep',
+    lounge: 'home', indoor: 'home', indoors: 'home', cozy: 'home', swimwear: 'beach+swim', swimsuit: 'beach+swim', bikini: 'beach+swim', swim: 'swim+beach', evening: 'night',
+    uniform: 'school', formalwear: 'formal', cold: 'winter', warm: 'summer', rainy: 'rain', xmas: 'holiday', christmas: 'holiday',
+    holidays: 'holiday', club: 'party', clubbing: 'party', hiking: 'outdoors', adventure: 'fight', battle: 'fight', combat: 'fight',
+    // Russian tag names
+    дом: 'home', дома: 'home', сон: 'sleep', ночь: 'night', утро: 'morning', зима: 'winter', лето: 'summer', весна: 'spring',
+    осень: 'autumn', дождь: 'rain', пляж: 'beach', спорт: 'gym', работа: 'work', школа: 'school', праздник: 'holiday',
+    вечеринка: 'party', свидание: 'date', путешествие: 'travel', прогулка: 'casual', бой: 'fight',
+};
+
+const matcherCache = new Map();
+
+function autoCfg() {
+    const s = getSettings();
+    if (!s.auto || typeof s.auto !== 'object') s.auto = structuredClone(DEFAULTS.auto);
+    const a = s.auto;
+    if (typeof a.enabled !== 'boolean') a.enabled = false;
+    a.scanDepth = Math.min(12, Math.max(1, Math.round(Number(a.scanDepth)) || 3));
+    if (!['keep', 'default', 'off'].includes(a.fallback)) a.fallback = 'keep';
+    if (!a.tagKeywords || typeof a.tagKeywords !== 'object') a.tagKeywords = {};
+    if (!a.pools || typeof a.pools !== 'object') a.pools = {};
+    if (!Array.isArray(a.npcs)) a.npcs = [];
+    return a;
+}
+
+function splitList(text) {
+    return String(text || '').split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
+}
+
+function escapeRe(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// "winter" matches winter / winters / etc.; Cyrillic words allow a short ending (дом -> дома, домой).
+// A keyword written as /regex/flags is used as is.
+function kwToRegex(kw) {
+    const raw = String(kw || '').trim();
+    if (!raw) return null;
+    try {
+        const m = raw.match(/^\/(.+)\/([a-z]*)$/i);
+        if (m) return new RegExp(m[1], m[2].replace(/[gy]/g, '') || 'i');
+        const body = raw.split(/\s+/).map(escapeRe).join('\\s+');
+        const tail = /[\u0400-\u04FF]/.test(raw) ? '[\\p{L}]{0,3}' : '(?:s|es|ed|ing|ly|er)?';
+        return new RegExp(`(?<![\\p{L}\\p{N}])${body}${tail}(?![\\p{L}\\p{N}])`, 'iu');
+    } catch (_e) {
+        return null;
+    }
+}
+
+// An alias may point at several built-in sets joined with "+" (swimsuit -> beach+swim).
+function tagKeywordList(tag) {
+    const sets = String(TAG_ALIASES[tag] || tag).split('+');
+    const extra = autoCfg().tagKeywords?.[tag] || '';
+    return [...new Set([tag, ...sets.flatMap((name) => splitList(TAG_KEYWORDS[name])), ...splitList(extra)])];
+}
+
+function tagMatchers(tag) {
+    const list = tagKeywordList(tag);
+    const cacheKey = `${tag}|${list.join(',')}`;
+    if (!matcherCache.has(cacheKey)) matcherCache.set(cacheKey, list.map(kwToRegex).filter(Boolean));
+    return matcherCache.get(cacheKey);
+}
+
+function cleanSceneText(text) {
+    return String(text || '').replace(/<[^>]*>/g, ' ').replace(/[*_`~]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// Newest message first.
+function sceneWindow() {
+    const chat = Array.isArray(ctx().chat) ? ctx().chat : [];
+    const depth = autoCfg().scanDepth;
+    const out = [];
+    for (let i = chat.length - 1; i >= 0 && out.length < depth; i--) {
+        const m = chat[i];
+        if (!m || m.is_system) continue;
+        out.push(cleanSceneText(m.mes));
+    }
+    return out;
+}
+
+// A tag fires with weight 1 for the newest message, less for older ones.
+function tagWeight(tag, win) {
+    const matchers = tagMatchers(tag);
+    let w = 0;
+    win.forEach((txt, i) => {
+        if (matchers.some((r) => r.test(txt))) w += Math.pow(0.7, i);
+    });
+    return w;
+}
+
+function pickOutfit(poolIds, win, currentId) {
+    const a = autoCfg();
+    const outfits = poolIds.map(getOutfit).filter(Boolean);
+    const scored = outfits.map((o) => {
+        const hits = (o.tags || []).filter((tag) => tagWeight(tag, win) > 0);
+        const score = (o.tags || []).reduce((sum, tag) => sum + tagWeight(tag, win), 0);
+        return { o, score, hits };
+    });
+    const best = Math.max(0, ...scored.map((x) => x.score));
+    if (best > 0) {
+        const top = scored.filter((x) => x.score >= best - 1e-9);
+        const pick = top.find((x) => x.o.id === currentId) || top[Math.floor(Math.random() * top.length)];
+        return { id: pick.o.id, hits: pick.hits, score: pick.score };
+    }
+    if (a.fallback === 'off') return { id: null, hits: [], score: 0 };
+    if (a.fallback === 'default') {
+        const def = outfits.find((o) => (o.tags || []).includes('default')) || outfits.find((o) => !(o.tags || []).length);
+        if (def) return { id: def.id, hits: [], score: 0 };
+    }
+    return { keep: true, hits: [], score: 0 };
+}
+
+function npcPresent(npc, win) {
+    const names = [npc.name, ...splitList(npc.aliases)];
+    const regs = names.map(kwToRegex).filter(Boolean);
+    return !!regs.length && win.some((txt) => regs.some((r) => r.test(txt)));
+}
+
+function poolRef(subject) {
+    const a = autoCfg();
+    if (subject === 'char' || subject === 'user') {
+        const k = `${subject}:${keys[subject]}`;
+        return { ok: !!keys[subject], get: () => a.pools[k] || [], set: (v) => { a.pools[k] = v; } };
+    }
+    const npc = a.npcs.find((n) => n.id === String(subject).replace(/^npc:/, ''));
+    return { ok: !!npc, get: () => npc?.pool || [], set: (v) => { if (npc) npc.pool = v; } };
+}
+
+function hasPool(kind) {
+    return poolRef(kind).get().length > 0;
+}
+
+function autoActive() {
+    try {
+        if (!autoCfg().enabled || !chatOpen()) return false;
+        return !chatState()?.autoOff;
+    } catch (_e) {
+        return false;
+    }
+}
+
+function presentNpcOutfits() {
+    if (!autoActive()) return [];
+    const st = chatState();
+    const win = sceneWindow();
+    const out = [];
+    for (const npc of autoCfg().npcs) {
+        if (!npc.name || !npcPresent(npc, win)) continue;
+        const o = getOutfit(st?.npcs?.[npc.id]);
+        const prompt = o ? String(o.prompt || o.name || '').trim() : '';
+        if (prompt) out.push({ id: npc.id, name: npc.name, outfit: o.name || '', prompt });
+    }
+    return out;
+}
+
+function autoEvaluate() {
+    if (!autoActive()) return false;
+    const a = autoCfg();
+    const win = sceneWindow();
+    const st = chatState(true);
+    if (!st) return false;
+    let changed = false;
+    for (const kind of ['char', 'user']) {
+        if (!keys[kind] || st.pins?.[kind]) continue;
+        const pool = poolRef(kind).get();
+        if (!pool.length) continue;
+        const pick = pickOutfit(pool, win, wornId(kind));
+        if (pick.keep || (pick.id || null) === wornId(kind)) continue;
+        if (pick.id) wear(kind, pick.id, { auto: true });
+        else unwear(kind, { auto: true });
+        changed = true;
+    }
+    for (const npc of a.npcs) {
+        if (!npc.name || !npc.pool?.length || !npcPresent(npc, win)) continue;
+        st.npcs = st.npcs && typeof st.npcs === 'object' ? st.npcs : {};
+        const current = getOutfit(st.npcs[npc.id])?.id || null;
+        const pick = pickOutfit(npc.pool, win, current);
+        if (pick.keep || (pick.id || null) === current) continue;
+        if (pick.id) st.npcs[npc.id] = pick.id;
+        else delete st.npcs[npc.id];
+        changed = true;
+    }
+    if (changed) saveChat();
+    updateInjection();
+    return changed;
+}
+
+// Human-readable "what would be picked right now", for the Auto sheet and the diagnostics.
+function autoPreview() {
+    const a = autoCfg();
+    const win = sceneWindow();
+    const st = chatState();
+    const lines = [`Scanning ${win.length} message(s). Fallback: ${a.fallback}.`];
+    const describe = (label, pool, currentId) => {
+        if (!pool.length) { lines.push(`${label}: no pool selected.`); return; }
+        const pick = pickOutfit(pool, win, currentId);
+        const name = pick.keep ? `(keeps ${getOutfit(currentId)?.name || 'nothing'})` : (getOutfit(pick.id)?.name || 'nothing');
+        lines.push(`${label}: ${name}${pick.hits?.length ? ` [${pick.hits.map((h) => `#${h}`).join(' ')}]` : ''}`);
+    };
+    for (const kind of ['char', 'user']) {
+        const tag = st?.pins?.[kind] ? ' (pinned by hand)' : '';
+        describe(`${displayName(kind)}${tag}`, poolRef(kind).get(), wornId(kind));
+    }
+    for (const npc of a.npcs) {
+        if (!npcPresent(npc, win)) { lines.push(`${npc.name || 'NPC'}: not mentioned in the scanned messages.`); continue; }
+        describe(npc.name, npc.pool || [], st?.npcs?.[npc.id]);
+    }
+    return lines.join('\n');
+}
+
 // ---------------------------------------------------------------- universal outputs
 // Wardrobe does not depend on one image extension. The worn outfit (per chat) is offered through:
 //  1. chat-model injection  (any extension whose prompt is written by the chat model)
@@ -1780,8 +2267,9 @@ function addMenuEntry() {
 
 function outfitText(target) {
     const parts = [];
-    if (target === 'char' || target === 'both') parts.push(promptFor('char'));
-    if (target === 'user' || target === 'both') parts.push(promptFor('user'));
+    if (target === 'char' || target === 'both' || target === 'all') parts.push(promptFor('char'));
+    if (target === 'user' || target === 'both' || target === 'all') parts.push(promptFor('user'));
+    if (target === 'all') for (const n of presentNpcOutfits()) parts.push(n.prompt);
     return parts.filter(Boolean).join(', ');
 }
 
@@ -1862,7 +2350,8 @@ function snapshot() {
         chatOpen: chatOpen(),
         char: describeWorn('char'),
         user: describeWorn('user'),
-        text: { char: outfitText('char'), user: outfitText('user'), both: outfitText('both') },
+        npcs: presentNpcOutfits(), // NPCs detected in the recent messages: [{ id, name, outfit, prompt }]
+        text: { char: outfitText('char'), user: outfitText('user'), both: outfitText('both'), all: outfitText('all') },
     };
 }
 
@@ -1915,6 +2404,15 @@ function registerCommands() {
         if (ui.open) renderPanel();
         return outfit.name;
     }, 'Wardrobe: /outfit-wear char|user <outfit name> puts an outfit on in this chat.');
+    addCommand('outfit-auto', (v) => {
+        const arg = v.trim().toLowerCase();
+        const st = chatState(true);
+        if (st && (arg === 'on' || arg === 'off')) { st.autoOff = arg === 'off'; saveChat(); updateInjection(); }
+        if (arg === 'now') autoEvaluate();
+        else if (arg === 'preview') return autoPreview();
+        if (ui.open && overlay) renderRail();
+        return autoActive() ? 'auto on' : 'auto off';
+    }, 'Wardrobe: /outfit-auto on|off|now|preview controls auto outfits in this chat (Auto mode must also be switched on in the panel).');
     addCommand('outfit-off', (v) => {
         const kind = v.trim().toLowerCase();
         for (const k of ['char', 'user']) if (!kind || kind === 'both' || kind === k) unwear(k);
@@ -1945,6 +2443,7 @@ function registerMacros() {
 async function onContextChanged() {
     await refreshKeys();
     syncAll();
+    autoEvaluate();
     if (ui.open) renderPanel();
 }
 
@@ -1962,6 +2461,14 @@ async function onContextChanged() {
         await refreshKeys();
         syncAll();
         console.log('[Wardrobe] loaded');
+    });
+    for (const name of ['MESSAGE_RECEIVED', 'MESSAGE_SENT', 'MESSAGE_EDITED', 'MESSAGE_SWIPED', 'MESSAGE_DELETED']) {
+        const eventName = c.event_types?.[name];
+        if (eventName) c.eventSource.on(eventName, () => { autoEvaluate(); if (ui.open && overlay) renderRail(); });
+    }
+    // Read the scene right before the chat model is prompted, so the outfit note is current.
+    c.eventSource.on(c.event_types?.GENERATION_STARTED || 'generation_started', (_type, _params, dryRun) => {
+        if (!dryRun) autoEvaluate();
     });
     for (const name of ['CHAT_CHANGED', 'CHARACTER_SELECTED', 'USER_AVATAR_CHANGED', 'PERSONA_CHANGED']) {
         const eventName = c.event_types?.[name];

@@ -56,3 +56,12 @@ Wardrobe is not tied to one extension. Every route is a checkbox under Extension
 | Catch-all request hook (off, advanced) | Any extension that POSTs a JSON image request whose URL matches your patterns; adds the outfit to the `prompt` / `input` / `base_caption` fields |
 
 For extension authors: `window.WardrobeAPI.getAll()` / `.getWorn('char'|'user')` / `.getPrompt('char'|'user'|'both')` / `.onChange(fn)`, the `wardrobe_changed` event on SillyTavern's `eventSource` (and a `wardrobe:changed` DOM event), macros `{{outfit_char}}`, `{{outfit_user}}`, `{{outfit_both}}`, and slash commands `/outfit-get`, `/outfit-wear char|user <name>`, `/outfit-off`.
+
+## Auto outfits (lorebook-style)
+Switch it on from the **Auto outfits** chip in the panel. Outfits are picked from a pool you choose, based on what the recent messages are about.
+- **Tags are trigger words.** An outfit tagged `home` fires when the scene mentions home, house, bedroom, kitchen, apartment and so on. About 25 common tags have built-in synonym sets in English and Russian (`winter`, `beach`, `work`, `formal`, `rain`, `night` and more). Add your own words or a `/regex/` per tag. Tag aliases such as `pajamas`, `cozy` or `fall` map onto the right set.
+- **Recent messages decide.** The last N messages are read (default 3), newer ones count more. If several pool outfits match, the one matching the most tags wins, and the one already worn is kept on ties.
+- **Nothing matches?** Keep the current outfit (default), wear the outfit tagged `default`, or take it off.
+- **Pools per subject:** the character, your persona and any number of **NPCs**. An NPC is found by its name (and nicknames) appearing in the recent messages, and its outfit is only sent while it is in the scene.
+- **Per chat:** auto-chosen outfits live in the chat like manual ones. Wearing something by hand pins that subject until you press *Resume auto*. `/outfit-auto on|off|now|preview` works too.
+- NPC outfits reach the chat model through the injection, the catch-all (*Everyone in the scene*) and `WardrobeAPI.getAll().npcs`.

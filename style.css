@@ -527,3 +527,18 @@ html.wd-lock, html.wd-lock body { overflow: hidden; }
     border: 1px solid rgba(255, 255, 255, 0.2); background: rgba(255, 255, 255, 0.08); color: inherit;
 }
 .wd-diag-actions button[data-diag="copy"] { background: var(--SmartThemeQuoteColor, #c9a7ff); color: #14121a; border-color: transparent; }
+
+/* ---- auto outfits */
+.wd-autobar { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0 2px; grid-column: 1 / -1; }
+.wd-pool { display: flex; flex-wrap: wrap; gap: 6px; }
+.wd-pool .wd-chip { min-height: 34px; padding: 0 12px; }
+.wd-chip.is-active em { color: inherit; opacity: 0.85; }
+.wd-pool-tools { display: flex; gap: 8px; }
+.wd-npc { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--wd-line); border-radius: 12px; background: var(--wd-raise); }
+.wd-npc-head { display: flex; gap: 8px; align-items: center; }
+.wd-npc-head input { flex: 1; }
+.wd-npc input[type="text"], .wd-field input[type="text"], .wd-field input[type="number"], .wd-field select {
+    min-height: 40px; padding: 0 12px; border: 1px solid var(--wd-line); border-radius: 10px;
+    background: var(--wd-raise); color: var(--wd-ink); font: inherit;
+}
+.wd-auto-preview { margin: 0; padding: 10px 12px; border: 1px solid var(--wd-line); border-radius: 10px; background: var(--wd-raise); white-space: pre-wrap; font-size: 0.85rem; }
