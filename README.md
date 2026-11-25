@@ -44,3 +44,15 @@ Because the image prompt is written by your chat model, Wardrobe also tells it w
 
 ### Direct NovelAI note
 sillyimages sends library descriptions to NovelAI as extra `| ...` character prompts and never sends pictures, so on direct NovelAI Wardrobe relies on the chat-model injection above and skips the library text (turn on *Direct NovelAI: also send the outfit as an extra character prompt* to restore it). Also check sillyimages → NovelAI → *Send character descriptions* is not "Do not send" if you use the library route.
+
+## Works with any image generator
+Wardrobe is not tied to one extension. Every route is a checkbox under Extensions → Wardrobe → *Other image generators*:
+
+| Route | Works with |
+|---|---|
+| Chat-model injection (on) | Anything where the chat model writes the image prompt |
+| SillyTavern Image Generation hook (on) | The built-in `/sd` extension (via its `sd_prompt_processing` event) |
+| sillyimages library (on) | sillyimages |
+| Catch-all request hook (off, advanced) | Any extension that POSTs a JSON image request whose URL matches your patterns; adds the outfit to the `prompt` / `input` / `base_caption` fields |
+
+For extension authors: `window.WardrobeAPI.getAll()` / `.getWorn('char'|'user')` / `.getPrompt('char'|'user'|'both')` / `.onChange(fn)`, the `wardrobe_changed` event on SillyTavern's `eventSource` (and a `wardrobe:changed` DOM event), macros `{{outfit_char}}`, `{{outfit_user}}`, `{{outfit_both}}`, and slash commands `/outfit-get`, `/outfit-wear char|user <name>`, `/outfit-off`.

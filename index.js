@@ -25,6 +25,11 @@ const DEFAULTS = Object.freeze({
     sort: 'recent', // 'recent' | 'name'
     opacity: 100, // panel opacity in percent (30-100)
     novelaiLibraryText: false, // direct NovelAI: also add outfit as an extra `|` character prompt (off: chat model writes it)
+    libraryAdapter: true, // write the outfit into the sillyimages character library
+    sdHook: true, // add the outfit to SillyTavern's built-in Image Generation prompt
+    fetchHook: false, // catch-all: add the outfit to outgoing image-generation requests of ANY extension
+    hookTarget: 'char', // which outfit(s) the catch-all adds: char | user | both
+    hookPatterns: '/api/sd/\n/api/novelai/\n/generate-image\n/images/generations\n/sdapi/v1/txt2img\n/sdapi/v1/img2img',
     injectChat: true, // also tell the chat model what is worn, so it writes the outfit into the image prompt
     folders: [],
     outfits: [],
@@ -239,6 +244,7 @@ function syncKey(kind, key) {
     const bucket = iigBucket(kind);
     if (!bucket) return;
     const s = getSettings();
+    if (s.libraryAdapter === false) { stripManaged(bucket[key]); return; }
     const outfit = getOutfit(chatState()?.[kind]);
     let entry = bucket[key];
     if (!entry && !outfit) return;
@@ -318,6 +324,7 @@ function updateInjection() {
         const role = c.extension_prompt_roles?.SYSTEM ?? 0;
         c.setExtensionPrompt(EXT_PROMPT_KEY, buildInjection(), pos, 1, false, role);
     } catch (e) { recordError('inject', e?.message || String(e)); }
+    notifyChange();
 }
 
 // ---------------------------------------------------------------- wearing
@@ -1412,6 +1419,8 @@ async function runDiagnostics() {
         info('Persona key', String(keys.user));
         info('Worn (this char / persona)', `${wornId('char') || '-'} / ${wornId('user') || '-'}`);
         info('Chat open', String(chatOpen()));
+        info('Outputs', `chat-model injection: ${getSettings().injectChat} | ST Image Generation hook: ${getSettings().sdHook} | sillyimages library: ${getSettings().libraryAdapter !== false} | catch-all: ${getSettings().fetchHook} (${getSettings().hookTarget})`);
+        info('Public API', typeof window.WardrobeAPI === 'object' ? 'window.WardrobeAPI ready' : 'missing');
         {
             const iig = ctx().extensionSettings?.[IIG_MODULE] || {};
             info('sillyimages apiType', String(iig.apiType));
@@ -1616,6 +1625,33 @@ function buildSettingsDrawer() {
                     <span>Direct NovelAI: also send the outfit as an extra character prompt (usually leave off)</span>
                 </label>
 
+                <div class="wd-set-title">Other image generators</div>
+                <label class="checkbox_label wd-set-check">
+                    <input type="checkbox" id="wd_lib" ${s.libraryAdapter !== false ? 'checked' : ''}>
+                    <span>sillyimages: write the outfit into its character library</span>
+                </label>
+                <label class="checkbox_label wd-set-check">
+                    <input type="checkbox" id="wd_sdhook" ${s.sdHook ? 'checked' : ''}>
+                    <span>SillyTavern Image Generation: add the outfit to its prompt</span>
+                </label>
+                <label class="checkbox_label wd-set-check">
+                    <input type="checkbox" id="wd_fetch" ${s.fetchHook ? 'checked' : ''}>
+                    <span>Catch-all: add the outfit to image requests of any extension (advanced)</span>
+                </label>
+                <div class="wd-set-row">
+                    <label for="wd_hooktarget">Catch-all adds</label>
+                    <select class="text_pole" id="wd_hooktarget">
+                        <option value="char" ${s.hookTarget === 'char' ? 'selected' : ''}>Character outfit</option>
+                        <option value="user" ${s.hookTarget === 'user' ? 'selected' : ''}>Persona outfit</option>
+                        <option value="both" ${s.hookTarget === 'both' ? 'selected' : ''}>Both</option>
+                    </select>
+                </div>
+                <div class="wd-set-row" style="flex-direction:column">
+                    <label for="wd_hookpatterns">Catch-all URL patterns (one per line)</label>
+                    <textarea class="text_pole" id="wd_hookpatterns" rows="4">${esc(s.hookPatterns)}</textarea>
+                </div>
+                <p class="wd-set-hint">The catch-all only touches POST requests to a matching URL and only the <code>prompt</code>, <code>input</code> and <code>base_caption</code> fields. Other extensions can read the outfit from <code>window.WardrobeAPI</code>, the <code>wardrobe_changed</code> event, <code>{{outfit_char}}</code> / <code>{{outfit_user}}</code> / <code>{{outfit_both}}</code>, or <code>/outfit-get</code>.</p>
+
                 <div class="wd-set-title">Chat model macros</div>
                 <p class="wd-set-hint">The checkbox above already does this automatically. Use <code>{{outfit_char}}</code> / <code>{{outfit_user}}</code> only if you want to place the outfit text yourself, and then turn the checkbox off to avoid sending it twice.</p>
 
@@ -1664,6 +1700,26 @@ function buildSettingsDrawer() {
     root.querySelector('#wd_nai_lib').addEventListener('change', (e) => {
         getSettings().novelaiLibraryText = e.target.checked;
         syncAll();
+    });
+    root.querySelector('#wd_lib').addEventListener('change', (e) => {
+        getSettings().libraryAdapter = e.target.checked;
+        syncAll();
+    });
+    root.querySelector('#wd_sdhook').addEventListener('change', (e) => {
+        getSettings().sdHook = e.target.checked;
+        save();
+    });
+    root.querySelector('#wd_fetch').addEventListener('change', (e) => {
+        getSettings().fetchHook = e.target.checked;
+        save();
+    });
+    root.querySelector('#wd_hooktarget').addEventListener('change', (e) => {
+        getSettings().hookTarget = e.target.value;
+        save();
+    });
+    root.querySelector('#wd_hookpatterns').addEventListener('input', (e) => {
+        getSettings().hookPatterns = e.target.value;
+        save();
     });
     root.querySelector('#wd_prefix').addEventListener('input', (e) => {
         getSettings().textPrefix = e.target.value;
@@ -1714,6 +1770,159 @@ function addMenuEntry() {
     menu.appendChild(item);
 }
 
+// ---------------------------------------------------------------- universal outputs
+// Wardrobe does not depend on one image extension. The worn outfit (per chat) is offered through:
+//  1. chat-model injection  (any extension whose prompt is written by the chat model)
+//  2. SillyTavern's built-in Image Generation (sd_prompt_processing event)
+//  3. sillyimages library adapter (see syncKey)
+//  4. catch-all request hook (opt-in): adds the outfit to outgoing image requests of any extension
+//  5. public API: window.WardrobeAPI, the 'wardrobe_changed' event, macros and slash commands
+
+function outfitText(target) {
+    const parts = [];
+    if (target === 'char' || target === 'both') parts.push(promptFor('char'));
+    if (target === 'user' || target === 'both') parts.push(promptFor('user'));
+    return parts.filter(Boolean).join(', ');
+}
+
+function addTo(text, add) {
+    const base = String(text || '');
+    if (!add || base.includes(add)) return base;
+    const trimmed = base.replace(/[,\s]+$/, '');
+    return trimmed ? `${trimmed}, ${add}` : add;
+}
+
+// ST built-in Image Generation: generationType numbers follow its generationMode enum
+// (0 char, 1 user, 2 scenario, 3 raw last, 4 now, 5 face, 6 free, 7 background, 8/9/10 multimodal).
+function onSdPrompt(data) {
+    try {
+        if (!getSettings().sdHook || !data || typeof data.prompt !== 'string') return;
+        const mode = data.generationType;
+        if ([5, 6, 7, 10].includes(mode)) return;
+        const target = ({ 0: 'char', 8: 'char', 1: 'user', 9: 'user' })[mode] || 'both';
+        const add = outfitText(target);
+        if (add) data.prompt = addTo(data.prompt, add);
+    } catch (e) { recordError('sdHook', e?.message || String(e)); }
+}
+
+const HOOK_FIELDS = new Set(['prompt', 'input', 'base_caption']);
+
+function patchBody(node, add) {
+    let changed = false;
+    if (Array.isArray(node)) {
+        for (const item of node) if (patchBody(item, add)) changed = true;
+    } else if (node && typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) {
+            if (HOOK_FIELDS.has(k) && typeof v === 'string') {
+                const next = addTo(v, add);
+                if (next !== v) { node[k] = next; changed = true; }
+            } else if (v && typeof v === 'object' && patchBody(v, add)) {
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+function installFetchHook() {
+    if (window.__wdFetchHooked || typeof window.fetch !== 'function') return;
+    window.__wdFetchHooked = true;
+    const original = window.fetch;
+    window.fetch = function wardrobeFetch(input, init) {
+        try {
+            const s = getSettings();
+            if (s.fetchHook && init && typeof init.body === 'string'
+                && String(init.method || 'GET').toUpperCase() === 'POST'
+                && init.body.trimStart().startsWith('{')) {
+                const url = typeof input === 'string' ? input : String(input?.url || input || '');
+                const patterns = String(s.hookPatterns || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+                if (patterns.some((pattern) => url.includes(pattern))) {
+                    const add = outfitText(s.hookTarget);
+                    if (add) {
+                        const json = JSON.parse(init.body);
+                        if (patchBody(json, add)) init = { ...init, body: JSON.stringify(json) };
+                    }
+                }
+            }
+        } catch (e) { recordError('fetchHook', e?.message || String(e)); }
+        return original.call(window, input, init);
+    };
+}
+
+// Public API for other extensions.
+const changeListeners = new Set();
+
+function describeWorn(kind) {
+    const o = getOutfit(wornId(kind));
+    return o ? { id: o.id, name: o.name || '', prompt: o.prompt || '', image: o.image || '' } : null;
+}
+
+function snapshot() {
+    return {
+        chatOpen: chatOpen(),
+        char: describeWorn('char'),
+        user: describeWorn('user'),
+        text: { char: outfitText('char'), user: outfitText('user'), both: outfitText('both') },
+    };
+}
+
+function notifyChange() {
+    const snap = snapshot();
+    for (const fn of changeListeners) {
+        try { fn(snap); } catch (_e) { /* listener errors must not break Wardrobe */ }
+    }
+    try { ctx().eventSource.emit('wardrobe_changed', snap); } catch (_e) { /* ignore */ }
+    try { window.dispatchEvent(new CustomEvent('wardrobe:changed', { detail: snap })); } catch (_e) { /* ignore */ }
+}
+
+function exposeApi() {
+    window.WardrobeAPI = Object.freeze({
+        version: '1.3.0',
+        getAll: snapshot,
+        getWorn: describeWorn, // 'char' | 'user' -> { id, name, prompt, image } | null
+        getPrompt: (kind = 'char') => outfitText(kind === 'user' || kind === 'both' ? kind : 'char'),
+        onChange(fn) { changeListeners.add(fn); return () => changeListeners.delete(fn); },
+    });
+}
+
+function addCommand(name, callback, help) {
+    const c = ctx();
+    try {
+        if (c.SlashCommandParser && c.SlashCommand) {
+            const args = c.SlashCommandArgument?.fromProps
+                ? [c.SlashCommandArgument.fromProps({ description: 'char | user | both [outfit name]', typeList: [c.ARGUMENT_TYPE?.STRING], isRequired: false })]
+                : [];
+            c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({
+                name, callback: async (_named, value) => callback(String(value || '')), helpString: help, unnamedArgumentList: args, returns: 'string',
+            }));
+        } else if (typeof c.registerSlashCommand === 'function') {
+            c.registerSlashCommand(name, (_named, value) => callback(String(value || '')), [], help, true, true);
+        }
+    } catch (e) { console.warn(`[Wardrobe] Could not register /${name}:`, e); }
+}
+
+function registerCommands() {
+    addCommand('outfit-get', (v) => {
+        const k = v.trim().toLowerCase();
+        return outfitText(k === 'user' || k === 'both' ? k : 'char');
+    }, 'Wardrobe: returns the outfit prompt worn in this chat (char, user or both).');
+    addCommand('outfit-wear', (v) => {
+        const [kind, ...rest] = v.trim().split(/\s+/);
+        const name = rest.join(' ').toLowerCase();
+        if (!['char', 'user'].includes(kind) || !name) return '';
+        const outfit = getSettings().outfits.find((o) => String(o.name || '').toLowerCase() === name);
+        if (!outfit || !wear(kind, outfit.id)) return '';
+        if (ui.open) renderPanel();
+        return outfit.name;
+    }, 'Wardrobe: /outfit-wear char|user <outfit name> puts an outfit on in this chat.');
+    addCommand('outfit-off', (v) => {
+        const kind = v.trim().toLowerCase();
+        for (const k of ['char', 'user']) if (!kind || kind === 'both' || kind === k) unwear(k);
+        if (ui.open) renderPanel();
+        return '';
+    }, 'Wardrobe: /outfit-off [char|user] takes the outfit off in this chat.');
+}
+
 // ---------------------------------------------------------------- macros / events / init
 
 function promptFor(kind) {
@@ -1726,6 +1935,7 @@ function registerMacros() {
         const c = ctx();
         if (typeof c.registerMacro !== 'function') return;
         c.registerMacro('outfit_char', () => promptFor('char'), 'Wardrobe: outfit prompt currently worn by the character.');
+        c.registerMacro('outfit_both', () => outfitText('both'), 'Wardrobe: outfit prompts worn by the character and the user persona.');
         c.registerMacro('outfit_user', () => promptFor('user'), 'Wardrobe: outfit prompt currently worn by the user persona.');
     } catch (error) {
         console.warn('[Wardrobe] Could not register macros:', error);
@@ -1742,7 +1952,11 @@ async function onContextChanged() {
     getSettings();
     const c = ctx();
     registerMacros();
+    exposeApi();
+    installFetchHook();
+    c.eventSource.on(c.event_types?.SD_PROMPT_PROCESSING || 'sd_prompt_processing', onSdPrompt);
     c.eventSource.on(c.event_types.APP_READY, async () => {
+        registerCommands();
         buildSettingsDrawer();
         addMenuEntry();
         await refreshKeys();
